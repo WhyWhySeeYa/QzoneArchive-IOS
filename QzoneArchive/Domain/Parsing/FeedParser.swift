@@ -271,6 +271,20 @@ enum FeedParser {
     }
 
     /// 由互动记录字段构建评论
+    /// 从评论 JSON 中取出评论数组: 根既可能是数组, 也可能是 {"comments":[...]} 之类的字典
+    static func commentArray(in root: Any) -> [[String: Any]]? {
+        if let list = root as? [[String: Any]] { return list }
+        guard let dictionary = root as? [String: Any] else { return nil }
+        for key in ["comments", "comment", "data", "list", "items"] {
+            if let list = dictionary[key] as? [[String: Any]] { return list }
+        }
+        for value in dictionary.values {
+            if let list = value as? [[String: Any]], !list.isEmpty { return list }
+            if let nested = value as? [String: Any], let list = commentArray(in: nested) { return list }
+        }
+        return nil
+    }
+
     static func commentFromValues(
         commentsJSON: String?,
         actorUin: String?,
@@ -281,7 +295,8 @@ enum FeedParser {
         var result: [ParsedComment] = []
         if let commentsJSON,
            let data = commentsJSON.data(using: .utf8),
-           let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+           let root = try? JSONSerialization.jsonObject(with: data),
+           let array = commentArray(in: root) {
             for comment in array {
                 result.append(
                     ParsedComment(
@@ -315,7 +330,8 @@ enum FeedParser {
 
     /// 逐张图片的首选地址, 对应桌面端 pictureUrls
     static func pictureURLs(_ json: String?) -> [String] {
-        guard let pictures = tryParseJsonText(json) as? [Any] else { return [] }
+        guard let json = json, let root = tryParseJsonText(json),
+              let pictures = jsonPointer(root, "/picdata/pic") as? [Any] else { return [] }
         return pictures.compactMap { pictureCandidates($0).first }
     }
 
