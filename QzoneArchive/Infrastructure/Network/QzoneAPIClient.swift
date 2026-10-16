@@ -76,27 +76,27 @@ actor QzoneAPIClient {
                 )
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 let body = Self.decodeText(data)
-                if let reason = retryableResponseReason(status: status, body: body) {
+                if let reason = Self.retryableResponseReason(status: status, body: body) {
                     lastReason = reason
                     if attempt < attempts {
                         logger.info("接口可重试: \(reason)")
-                        try await Task.sleep(nanoseconds: UInt64(feedRetryDelayMs(attempt: attempt)) * 1_000_000)
+                        try await Task.sleep(nanoseconds: UInt64(Self.feedRetryDelayMs(attempt: attempt)) * 1_000_000)
                         continue
                     }
                     throw QzoneError.apiError(code: 0, message: "第 \(attempt) 次请求仍失败：\(reason)")
                 }
-                return try parseFeedPage(body: body)
+                return try Self.parseFeedPage(body: body)
             } catch let error as QzoneError {
                 if error.isRetryable, attempt < attempts {
                     lastReason = error.localizedDescription
-                    try await Task.sleep(nanoseconds: UInt64(feedRetryDelayMs(attempt: attempt)) * 1_000_000)
+                    try await Task.sleep(nanoseconds: UInt64(Self.feedRetryDelayMs(attempt: attempt)) * 1_000_000)
                     continue
                 }
                 throw error
             } catch {
                 lastReason = "请求超时（第 \(attempt)/\(attempts) 次）"
                 if attempt < attempts {
-                    try await Task.sleep(nanoseconds: UInt64(feedRetryDelayMs(attempt: attempt)) * 1_000_000)
+                    try await Task.sleep(nanoseconds: UInt64(Self.feedRetryDelayMs(attempt: attempt)) * 1_000_000)
                     continue
                 }
                 throw QzoneError.networkUnavailable
@@ -120,10 +120,10 @@ actor QzoneAPIClient {
         )
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         let body = Self.decodeText(data)
-        if let reason = retryableResponseReason(status: status, body: body) {
+        if let reason = Self.retryableResponseReason(status: status, body: body) {
             throw QzoneError.apiError(code: 0, message: reason)
         }
-        return try parseFeedPage(body: body)
+        return try Self.parseFeedPage(body: body)
     }
 
     // MARK: - 请求
@@ -144,7 +144,7 @@ actor QzoneAPIClient {
             queryItems.append(URLQueryItem(name: "res_attach", value: attachInfo))
         }
         components.queryItems = queryItems
-        let url = try components.asURL()
+        guard let url = components.url else { throw QzoneError.invalidResponse }
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
@@ -167,9 +167,9 @@ actor QzoneAPIClient {
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-site",
-            "Sec-Ch-Ua": secChUa(credentials.userAgent),
+            "Sec-Ch-Ua": Self.secChUa(credentials.userAgent),
             "Sec-Ch-Ua-Mobile": "?1",
-            "Sec-Ch-Ua-Platform": secPlatform(credentials.userAgent),
+            "Sec-Ch-Ua-Platform": Self.secPlatform(credentials.userAgent),
         ]
         return headers
     }

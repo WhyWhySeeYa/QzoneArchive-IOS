@@ -51,12 +51,12 @@ struct ArchiveListView: View {
                 }
             }
         }
-        .confirmationDialog("确认删除", isPresented: $viewModel.showingDeleteConfirm) {
+        .confirmationDialog("确认删除", isPresented: $viewModel.showingDeleteConfirm, titleVisibility: .visible) {
             Button("删除 \(viewModel.selection.count) 条归档", role: .destructive) { viewModel.deleteSelected() }
         } message: {
             Text("删除后无法恢复，媒体文件也会一并清理。")
         }
-        .confirmationDialog("确认清空", isPresented: $viewModel.showingClearConfirm) {
+        .confirmationDialog("确认清空", isPresented: $viewModel.showingClearConfirm, titleVisibility: .visible) {
             Button("清空「\(viewModel.selectedCategory.displayName)」", role: .destructive) { viewModel.clearCategory() }
         } message: {
             Text("该分类下的全部归档与媒体都会被删除。")

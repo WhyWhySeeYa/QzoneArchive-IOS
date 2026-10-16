@@ -33,8 +33,8 @@ struct ContactsView: View {
         }
         .listStyle(.insetGrouped)
         .navigationTitle("互动排行")
-        .onAppear(perform: load)
-        .refreshable { load() }
+        .onAppear { Task { await load() } }
+        .refreshable { await load() }
     }
 
     private func row(_ item: InteractionRank) -> some View {
@@ -62,18 +62,14 @@ struct ContactsView: View {
         .buttonStyle(.plain)
     }
 
-    private func load() {
+    private func load() async {
         guard let account = environment.sessionAccount else { return }
         isLoading = true
-        Task {
-            let result = await Task.detached(priority: .userInitiated) {
-                let repo = SQLiteArchiveRepository(database: self.environment.database)
-                return (try? repo.interactionRanking(account: account, limit: 100)) ?? []
-            }.value
-            await MainActor.run {
-                self.ranking = result
-                self.isLoading = false
-            }
-        }
+        let result = await Task.detached(priority: .userInitiated) {
+            let repo = SQLiteArchiveRepository(database: self.environment.database)
+            return (try? repo.interactionRanking(account: account, limit: 100)) ?? []
+        }.value
+        self.ranking = result
+        self.isLoading = false
     }
 }

@@ -150,8 +150,7 @@ struct PostDetailView: View {
                         postID: post.sourceID,
                         remoteURL: item.url,
                         localRelativePath: "\(post.sourceID)-\(item.pictureIndex ?? 0).jpg",
-                        mediaType: item.mediaType == .image ? .image : .video,
-                        downloadState: .completed
+                        mediaType: item.mediaType
                     )
                 }
             }

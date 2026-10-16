@@ -33,7 +33,7 @@ struct MediaLibraryView: View {
             }
         }
         .navigationTitle("媒体库")
-        .onAppear(perform: load)
+        .onAppear { Task { await load() } }
         .alert("提示", isPresented: Binding(
             get: { notice != nil },
             set: { if !$0 { notice = nil } }
@@ -50,11 +50,11 @@ struct MediaLibraryView: View {
     private var yearPicker: some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
-                FilterChip(title: "全部", isSelected: selectedYear == nil) { selectedYear = nil; load() }
+                FilterChip(title: "全部", isSelected: selectedYear == nil) { selectedYear = nil; Task { await load() } }
                 ForEach(years, id: \.self) { year in
                     FilterChip(title: "\(year)", isSelected: selectedYear == year) {
                         selectedYear = year
-                        load()
+                        Task { await load() }
                     }
                 }
             }
@@ -121,21 +121,17 @@ struct MediaLibraryView: View {
         .padding(.top, 60)
     }
 
-    private func load() {
+    private func load() async {
         guard let account = environment.sessionAccount else { return }
         isLoading = true
-        Task {
-            let page = await Task.detached(priority: .userInitiated) {
-                let repo = SQLiteArchiveRepository(database: self.environment.database)
-                return (try? repo.mediaTimeline(account: account, limit: 200, offset: 0, year: selectedYear))
-                    ?? MediaTimelinePage(items: [], total: 0, years: [])
-            }.value
-            await MainActor.run {
-                self.items = page.items
-                self.years = page.years
-                self.isLoading = false
-            }
-        }
+        let page = await Task.detached(priority: .userInitiated) {
+            let repo = SQLiteArchiveRepository(database: self.environment.database)
+            return (try? repo.mediaTimeline(account: account, limit: 200, offset: 0, year: self.selectedYear))
+                ?? MediaTimelinePage(items: [], total: 0, years: [])
+        }.value
+        self.items = page.items
+        self.years = page.years
+        self.isLoading = false
     }
 }
 
