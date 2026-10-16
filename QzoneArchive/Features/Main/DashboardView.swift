@@ -26,8 +26,8 @@ struct DashboardView: View {
             .padding(20)
         }
         .navigationTitle("概览")
-        .onAppear { viewModel.refresh() }
-        .refreshable { viewModel.refresh() }
+        .onAppear { Task { await viewModel.refresh() } }
+        .refreshable { await viewModel.refresh() }
         .alert("提示", isPresented: Binding(
             get: { viewModel.notice != nil },
             set: { if !$0 { viewModel.notice = nil } }
@@ -219,9 +219,4 @@ private struct ProgressRow: View {
                 .font(.caption.weight(.semibold))
         }
     }
-}
-
-#Preview {
-    DashboardView(environment: AppEnvironment.live())
-        .environmentObject(AppEnvironment.live())
 }

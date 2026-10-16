@@ -220,8 +220,3 @@ struct ShareSheet: UIViewControllerRepresentable {
 
     func updateUIViewController(_ uiViewController: UIActivityViewController, context: Context) {}
 }
-
-#Preview {
-    ArchiveListView(environment: AppEnvironment.live())
-        .environmentObject(AppEnvironment.live())
-}

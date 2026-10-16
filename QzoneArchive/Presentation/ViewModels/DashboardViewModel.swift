@@ -24,26 +24,22 @@ final class DashboardViewModel: ObservableObject {
     }
 
     /// 刷新概览
-    func refresh() {
+    func refresh() async {
         guard let account = environment.sessionAccount else { return }
         isLoading = true
-        Task {
-            let result = await Task.detached(priority: .userInitiated) {
-                let repo = SQLiteArchiveRepository(database: self.environment.database)
-                return (try? repo.overview(
-                    account: account,
-                    mediaBytes: self.environment.storage.directorySize(
-                        self.environment.storage.imagesRoot
-                    )
-                )) ?? ArchiveOverview(
-                    dynamics: 0, pictures: 0, videos: 0, comments: 0, likes: 0, databaseBytes: 0, mediaBytes: 0
+        let result = await Task.detached(priority: .userInitiated) {
+            let repo = SQLiteArchiveRepository(database: self.environment.database)
+            return (try? repo.overview(
+                account: account,
+                mediaBytes: self.environment.storage.directorySize(
+                    self.environment.storage.imagesRoot
                 )
-            }.value
-            await MainActor.run {
-                self.overview = result
-                self.isLoading = false
-            }
-        }
+            )) ?? ArchiveOverview(
+                dynamics: 0, pictures: 0, videos: 0, comments: 0, likes: 0, databaseBytes: 0, mediaBytes: 0
+            )
+        }.value
+        self.overview = result
+        self.isLoading = false
     }
 
     /// 开始全量归档
@@ -57,8 +53,8 @@ final class DashboardViewModel: ObservableObject {
             } catch {
                 notice = error.localizedDescription
             }
-            refreshProgress()
-            refresh()
+            await refreshProgress()
+            await refresh()
         }
     }
 
@@ -73,7 +69,7 @@ final class DashboardViewModel: ObservableObject {
         let settings = environment.settings.archiveSettings
         Task {
             await environment.archiveEngine.resume()
-            refreshProgress()
+            await refreshProgress()
         }
     }
 

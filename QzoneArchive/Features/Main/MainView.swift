@@ -98,9 +98,3 @@ enum TabItem: String, CaseIterable, Identifiable, Hashable {
         }
     }
 }
-
-#Preview {
-    MainView()
-        .environmentObject(AppEnvironment.live())
-        .environmentObject(AppState(environment: AppEnvironment.live()))
-}

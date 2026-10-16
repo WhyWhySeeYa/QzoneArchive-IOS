@@ -211,25 +211,3 @@ struct FlowLayout: Layout {
         }
     }
 }
-
-#Preview {
-    NavigationStack {
-        PostDetailView(
-            post: ArchivePost(
-                id: 1,
-                accountID: UUID(),
-                sourceID: "cell-1",
-                authorUin: "123",
-                authorName: "测试",
-                contentText: "@{uin:456,nick:好友} 测试内容",
-                publishedAt: Date(),
-                archivedAt: Date(),
-                postType: "post",
-                category: .self_,
-                likes: [LikeUser(uin: "1", nickname: "好友")],
-                comments: []
-            )
-        )
-        .environmentObject(AppEnvironment.live())
-    }
-}

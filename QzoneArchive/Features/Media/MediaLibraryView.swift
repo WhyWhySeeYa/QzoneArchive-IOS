@@ -223,8 +223,3 @@ struct FilterChip: View {
         .buttonStyle(.plain)
     }
 }
-
-#Preview {
-    MediaLibraryView()
-        .environmentObject(AppEnvironment.live())
-}

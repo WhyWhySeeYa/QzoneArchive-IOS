@@ -155,8 +155,3 @@ extension ArchiveTask.Status {
         }
     }
 }
-
-#Preview {
-    TasksView(environment: AppEnvironment.live())
-        .environmentObject(AppEnvironment.live())
-}

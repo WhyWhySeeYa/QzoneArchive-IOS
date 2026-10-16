@@ -178,9 +178,3 @@ struct SettingsView: View {
         }
     }
 }
-
-#Preview {
-    SettingsView()
-        .environmentObject(AppEnvironment.live())
-        .environmentObject(AppState(environment: AppEnvironment.live()))
-}

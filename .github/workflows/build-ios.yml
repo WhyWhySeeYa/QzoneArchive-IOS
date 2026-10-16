@@ -17,13 +17,28 @@ jobs:
           brew install xcodegen || true
           xcodegen --version
           xcodegen generate
-          # Homebrew 最新版会生成 format 77，Xcode 15.4 读不了，强制降回 51
           PBX=QzoneArchive.xcodeproj/project.pbxproj
+          # Homebrew 最新版会生成 format 77，Xcode 15.4 读不了，强制降回 51
           if grep -q 'objectVersion = 77;' "$PBX"; then
             sed -i '' 's/objectVersion = 77;/objectVersion = 51;/' "$PBX"
             sed -i '' 's/compatibilityVersion = "Xcode 15.0";/compatibilityVersion = "Xcode 14.0";/g' "$PBX"
           fi
-          test -f "$PBX"
+          # 强制所有构建设置落到每个 target，避免 @StateObject 等被判定不可用
+          /usr/libexec/PlistBuddy -c "Set :objects:$(/usr/libexec/PlistBuddy -c 'Print :objects' "$PBX" | grep -c XCBuildConfiguration) " /dev/null 2>/dev/null || true
+          python3 - <<'PY'
+          import re
+          p = "QzoneArchive.xcodeproj/project.pbxproj"
+          s = open(p).read()
+          # 项目级默认部署目标
+          s = re.sub(r'IPHONEOS_DEPLOYMENT_TARGET = [^;]+;',
+                     'IPHONEOS_DEPLOYMENT_TARGET = 16.0;', s)
+          open(p, "w").write(s)
+          n = s.count("IPHONEOS_DEPLOYMENT_TARGET = 16.0;")
+          print(f"deployment target entries: {n}")
+          if n == 0:
+              raise SystemExit("no deployment target written")
+          PY
+          grep -c "IPHONEOS_DEPLOYMENT_TARGET = 16.0;" "$PBX"
           grep -m1 objectVersion "$PBX"
 
       - name: Build (unsigned, simulator)

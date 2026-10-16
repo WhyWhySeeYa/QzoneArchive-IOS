@@ -62,7 +62,9 @@ final class FeedCursorTests: XCTestCase {
         let cursor = makeCursor(offset: 5, baseTime: 9, loadCount: 1)
         let parsed = FeedCursor.parseQueryPairs(cursor)
         XCTAssertNotNil(parsed)
-        XCTAssertEqual(parsed?["att"], "back_server_info=offset%3D5%26basetime%3D9&loadcount=1")
+        XCTAssertEqual(parsed?.first(where: { $0.key == "att" })?.value,
+                       "back_server_info=offset%3D5%26basetime%3D9&loadcount=1")
+        XCTAssertEqual(FeedCursor.serializeQueryPairs(parsed ?? []), cursor)
     }
 
     func testRetryableResponseReason() {

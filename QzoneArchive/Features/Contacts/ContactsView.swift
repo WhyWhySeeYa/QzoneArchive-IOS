@@ -77,8 +77,3 @@ struct ContactsView: View {
         }
     }
 }
-
-#Preview {
-    ContactsView()
-        .environmentObject(AppEnvironment.live())
-}

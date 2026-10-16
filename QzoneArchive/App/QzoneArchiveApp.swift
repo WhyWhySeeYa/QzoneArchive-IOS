@@ -14,7 +14,8 @@ struct QzoneArchiveApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        let environment = AppEnvironment.live()
+        // live() 是 @MainActor 方法，init 默认非隔离，需显式切主线程构造
+        let environment = MainActor.assumeIsolated { AppEnvironment.live() }
         let appState = AppState(environment: environment)
         _environment = StateObject(wrappedValue: environment)
         _appState = StateObject(wrappedValue: appState)
