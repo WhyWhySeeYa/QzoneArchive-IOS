@@ -65,8 +65,9 @@ struct ContactsView: View {
     private func load() async {
         guard let account = environment.sessionAccount else { return }
         isLoading = true
+        let database = environment.database
         let result = await Task.detached(priority: .userInitiated) {
-            let repo = SQLiteArchiveRepository(database: self.environment.database)
+            let repo = SQLiteArchiveRepository(database: database)
             return (try? repo.interactionRanking(account: account, limit: 100)) ?? []
         }.value
         self.ranking = result

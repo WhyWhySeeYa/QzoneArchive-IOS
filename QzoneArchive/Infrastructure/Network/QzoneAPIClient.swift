@@ -72,7 +72,7 @@ actor QzoneAPIClient {
                 let (data, response) = try await performFeedRequest(
                     refreshType: refreshType,
                     attachInfo: attachInfo,
-                    credentials: feedCredentials
+                    feedCredentials: feedCredentials
                 )
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 let body = Self.decodeText(data)
@@ -116,7 +116,7 @@ actor QzoneAPIClient {
         let (data, response) = try await performFeedRequest(
             refreshType: refreshType,
             attachInfo: attachInfo,
-            credentials: feedCredentials
+            feedCredentials: feedCredentials
         )
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         let body = Self.decodeText(data)
@@ -228,8 +228,8 @@ actor QzoneAPIClient {
     static func numericInteger(_ value: Any?) -> Int? {
         if let number = value as? Int { return number }
         if let number = value as? NSNumber {
-            let decimal = Decimal(number.doubleValue)
-            if decimal == Decimal(decimal) { return number.intValue }
+            let doubleValue = number.doubleValue
+            if doubleValue == doubleValue.rounded() { return number.intValue }
         }
         if let string = value as? String, let number = Int(string) { return number }
         return nil

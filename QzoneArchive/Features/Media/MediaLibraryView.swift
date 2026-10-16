@@ -9,7 +9,7 @@ import SwiftUI
 import Photos
 
 struct MediaLibraryView: View {
-    @EnvironmentObject var environment: AppEnvironment
+    @EnvironmentObject private var environment: AppEnvironment
     @State private var items: [MediaTimelineItem] = []
     @State private var years: [Int] = []
     @State private var selectedYear: Int?
@@ -18,6 +18,8 @@ struct MediaLibraryView: View {
     @State private var fullScreenItem: MediaTimelineItem?
 
     private let columns = [GridItem(.adaptive(minimum: 105), spacing: 4)]
+
+    init() {}
 
     var body: some View {
         ScrollView {
@@ -124,9 +126,11 @@ struct MediaLibraryView: View {
     private func load() async {
         guard let account = environment.sessionAccount else { return }
         isLoading = true
+        let database = environment.database
+        let year = selectedYear
         let page = await Task.detached(priority: .userInitiated) {
-            let repo = SQLiteArchiveRepository(database: self.environment.database)
-            return (try? repo.mediaTimeline(account: account, limit: 200, offset: 0, year: self.selectedYear))
+            let repo = SQLiteArchiveRepository(database: database)
+            return (try? repo.mediaTimeline(account: account, limit: 200, offset: 0, year: year))
                 ?? MediaTimelinePage(items: [], total: 0, years: [])
         }.value
         self.items = page.items
@@ -185,7 +189,7 @@ struct MediaDetailView: View {
             do {
                 let (data, _) = try await URLSession.shared.data(from: url)
                 try await PHPhotoLibrary.shared().performChanges {
-                    let request = PHAssetCreationRequest.creationRequestForAsset()
+                    let request = PHAssetCreationRequest.forAsset()
                     if item.mediaType == .image {
                         request.addResource(with: .photo, data: data, options: nil)
                     } else {

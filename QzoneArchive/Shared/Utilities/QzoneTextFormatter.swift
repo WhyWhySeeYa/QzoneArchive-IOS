@@ -31,16 +31,16 @@ enum QzoneTextFormatter {
                 range: NSRange(location: 0, length: nsString.length)
             )
             for match in matches.reversed() {
-                guard let range = Range(match.range, in: working) else { continue }
+                guard let textRange = Range(match.range, in: working),
+                      let start = AttributedString.Index(textRange.lowerBound, within: result),
+                      let end = AttributedString.Index(textRange.upperBound, within: result)
+                else { continue }
                 let uin = nsString.substring(with: match.range(at: 1))
                 let nick = nsString.substring(with: match.range(at: 2))
-                let display = AttributedString("@\(nick)")
-                var attributed = display
-                attributed.foregroundColor = .accentColor
-                attributed.link = URL(string: "qzonearchive://user/\(uin)")
-                if let attributedRange = result.range(of: display) {
-                    result.replaceSubrange(attributedRange, with: attributed)
-                }
+                var replacement = AttributedString("@\(nick)")
+                replacement.foregroundColor = .accentColor
+                replacement.link = URL(string: "qzonearchive://user/\(uin)")
+                result.replaceSubrange(start..<end, with: replacement)
             }
         }
         return result

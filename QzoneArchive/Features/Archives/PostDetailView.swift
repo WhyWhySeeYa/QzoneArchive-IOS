@@ -138,14 +138,17 @@ struct PostDetailView: View {
     }
 
     private func loadMedia() {
+        let database = environment.database
+        let postAuthorUin = post.authorUin ?? "0"
+        let postID = post.id
         Task {
             let page = await Task.detached(priority: .userInitiated) {
-                let repo = SQLiteArchiveRepository(database: self.environment.database)
-                let account = Account(id: UUID(), qqUin: self.post.authorUin ?? "0")
+                let repo = SQLiteArchiveRepository(database: database)
+                let account = Account(id: UUID(), qqUin: postAuthorUin)
                 return (try? repo.mediaTimeline(account: account, limit: 40, offset: 0, year: nil)) ?? MediaTimelinePage(items: [], total: 0, years: [])
             }.value
             await MainActor.run {
-                localMedia = page.items.filter { $0.dynamicID == post.id }.map { item in
+                localMedia = page.items.filter { $0.dynamicID == postID }.map { item in
                     MediaAsset(
                         postID: post.sourceID,
                         remoteURL: item.url,

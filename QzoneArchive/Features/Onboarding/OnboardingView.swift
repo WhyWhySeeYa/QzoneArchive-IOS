@@ -160,9 +160,9 @@ struct OnboardingView: View {
             isRefreshing = true
             statusMessage = "正在获取登录二维码…"
             do {
-                let image = try await environment.session.startQRLogin()
+                let imageData = try await environment.session.startQRLogin()
                 await MainActor.run {
-                    qrImage = image
+                    qrImage = UIImage(data: imageData)
                     statusMessage = "请使用手机 QQ 扫描二维码"
                 }
                 await poll()

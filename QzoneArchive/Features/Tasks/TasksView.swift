@@ -29,7 +29,7 @@ struct TasksView: View {
         }
         .navigationTitle("任务")
         .onAppear {
-            viewModel.refresh()
+            Task { await viewModel.refresh() }
             loadFailures()
         }
     }
@@ -133,12 +133,13 @@ struct TasksView: View {
 
     private func loadFailures() {
         guard let account = environment.sessionAccount else { return }
+        let database = environment.database
         Task {
             let result = await Task.detached(priority: .userInitiated) {
-                let repo = SQLiteArchiveRepository(database: self.environment.database)
+                let repo = SQLiteArchiveRepository(database: database)
                 return (try? repo.listFailures(account: account, resolved: false)) ?? []
             }.value
-            await MainActor.run { failures = result }
+            failures = result
         }
     }
 }

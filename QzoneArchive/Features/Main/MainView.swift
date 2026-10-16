@@ -20,9 +20,6 @@ struct MainView: View {
                 .navigationBarTitleDisplayMode(.inline)
         } detail: {
             detailView
-                .navigationDestination(for: TabItem.self) { item in
-                    destination(for: item)
-                }
                 .navigationBarTitleDisplayMode(.inline)
         }
         .onAppear {
@@ -40,18 +37,21 @@ struct MainView: View {
     }
 
     private var sidebar: some View {
-        List(selection: $selectedTab) {
+        List {
             ForEach(TabItem.allCases) { item in
-                NavigationLink(value: item) {
-                Label {
-                    Text(item.title)
-                        .font(.subheadline.weight(.semibold))
-                } icon: {
-                    Image(systemName: item.icon)
-                        .foregroundColor(selectedTab == item ? .accentColor : .secondary)
+                Button {
+                    selectedTab = item
+                } label: {
+                    Label {
+                        Text(item.title)
+                            .font(.subheadline.weight(.semibold))
+                    } icon: {
+                        Image(systemName: item.icon)
+                    }
                 }
-                }
-                .listRowBackground(Color.clear)
+                .buttonStyle(.plain)
+                .foregroundColor(selectedTab == item ? .accentColor : .primary)
+                .listRowBackground(selectedTab == item ? Color.accentColor.opacity(0.12) : Color.clear)
             }
         }
         .listStyle(.sidebar)
@@ -62,24 +62,13 @@ struct MainView: View {
         switch selectedTab {
         case .dashboard: DashboardView(environment: environment)
         case .archives: ArchiveListView(environment: environment)
-        case .media: MediaLibraryView(environment: environment)
+        case .media: MediaLibraryView()
         case .contacts: ContactsView()
         case .tasks: TasksView(environment: environment)
         case .settings: SettingsView()
         }
     }
 
-    /// NavigationLink 目的地
-    private func destination(for item: TabItem) -> some View {
-        switch item {
-        case .dashboard: DashboardView(environment: environment)
-        case .archives: ArchiveListView(environment: environment)
-        case .media: MediaLibraryView(environment: environment)
-        case .contacts: ContactsView()
-        case .tasks: TasksView(environment: environment)
-        case .settings: SettingsView()
-        }
-    }
 }
 
 /// 主导航项

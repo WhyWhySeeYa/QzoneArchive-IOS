@@ -190,14 +190,14 @@ actor LoginSession {
 
         let credentialCookies = QzoneLoginPrimitives.loginCredentials(from: current.cookies, uin: uin)
         guard !credentialCookies.isEmpty else { throw QzoneError.loginFailed("登录凭证不完整") }
-        let stored = QzoneStoredCredentials(
+        let credentialRecord = QzoneStoredCredentials(
             uin: uin,
             gTk: Int(QzoneLoginPrimitives.bkn(pSkey)),
             cookies: credentialCookies,
             userAgent: userAgent,
             savedAt: Date()
         )
-        try await credentials.saveCredentials(stored)
+        try await credentials.saveCredentials(credentialRecord)
         try await credentials.saveAccount(Account(qqUin: uin, nickname: nil, lastLoginAt: Date(), createdAt: Date(), updatedAt: Date()))
         logger.info("二维码登录成功 \(uin)")
         return LoginStatus(status: .success, message: "登录成功")
@@ -219,7 +219,7 @@ actor LoginSession {
             URLQueryItem(name: "proxy_url", value: ""),
             URLQueryItem(name: "pt_no_auth", value: "1"),
         ]
-        return try components.asURL()
+        return components.url!
     }
 
     private func ptqrshowQuery() throws -> URL {
@@ -236,7 +236,7 @@ actor LoginSession {
             URLQueryItem(name: "pt_3rd_aid", value: "0"),
             URLQueryItem(name: "u1", value: sURL),
         ]
-        return try components.asURL()
+        return components.url!
     }
 
     private func ptqrloginQuery(_ current: QzoneLoginSession) throws -> URL {
@@ -260,7 +260,7 @@ actor LoginSession {
             URLQueryItem(name: "aid", value: QzoneLoginPrimitives.appID),
             URLQueryItem(name: "daid", value: QzoneLoginPrimitives.daID),
         ]
-        return try components.asURL()
+        return components.url!
     }
 
     /// 文本请求, 返回正文与本次请求收集到的 Cookie

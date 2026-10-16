@@ -365,3 +365,19 @@ struct MediaTimelinePage {
     var total: Int
     var years: [Int]
 }
+
+extension ArchiveTask.Status {
+    /// 状态中文名, 供界面展示
+    var title: String {
+        switch self {
+        case .pending: return "等待中"
+        case .running: return "运行中"
+        case .paused: return "已暂停"
+        case .completed: return "已完成"
+        case .failed: return "失败"
+        case .cancelled: return "已取消"
+        }
+    }
+
+    var displayName: String { title }
+}
