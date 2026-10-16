@@ -411,6 +411,6 @@ extension ArchiveRepository {
         task.skippedCount = progress.skipped
         task.failedCount = progress.failed
         task.downloadedCount = progress.downloaded
-        try upsertTask(task)
+        try upsertTask(task, account: account)
     }
 }

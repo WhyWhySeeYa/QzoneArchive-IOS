@@ -251,10 +251,11 @@ final class FeedParserTests: XCTestCase {
     }
 
     func testParsePostsSeparatesLikesAndComments() {
-        let like = rawFeed(eventType: 217, cellID: "cell-like", actorUin: "999", actorName: "点赞人")
+        // 点赞/评论记录与原动态共用同一个 cell_id (线上即如此)
+        let like = rawFeed(eventType: 217, cellID: "cell-main", actorUin: "999", actorName: "点赞人")
         let comment = rawFeed(
             eventType: 2,
-            cellID: "cell-comment",
+            cellID: "cell-main",
             actorUin: "888",
             actorName: "评论人",
             comments: ["comments": [["comment": "你好", "uin": "888", "nickname": "评论人", "time": 1_700_000_100]]]

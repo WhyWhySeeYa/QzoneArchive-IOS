@@ -153,7 +153,7 @@ final class ArchiveRepositoryTests: XCTestCase {
         task.status = .running
         task.currentPage = 12
         task.savedCount = 300
-        try repository.upsertTask(task)
+        try repository.upsertTask(task, account: account)
         let loaded = try repository.loadTask(account: account, taskType: "feed")
         XCTAssertEqual(loaded?.status, .running)
         XCTAssertEqual(loaded?.currentPage, 12)

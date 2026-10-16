@@ -321,7 +321,8 @@ enum FeedParser {
 
     /// 单张图片的候选地址, 对应桌面端 pictureUrlCandidates (保序去重, 过滤空串)
     static func pictureUrlCandidates(_ json: String?) -> [[String]] {
-        guard let json = json, let pictures = tryParseJsonText(json) as? [Any] else { return [] }
+        guard let json = json, let root = tryParseJsonText(json),
+              let pictures = jsonPointer(root, "/picdata/pic") as? [Any] else { return [] }
         return pictures.map { pictureCandidates($0) }
     }
 

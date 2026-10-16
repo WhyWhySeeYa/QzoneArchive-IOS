@@ -54,7 +54,7 @@ protocol ArchiveRepository {
     func failSkip(account: Account, id: Int, error: String) throws
     func clearResolvedSkips(account: Account) throws
 
-    func upsertTask(_ task: ArchiveTask) throws
+    func upsertTask(_ task: ArchiveTask, account: Account) throws
     func loadTask(account: Account, taskType: String) throws -> ArchiveTask?
     func clearTasks(account: Account) throws
     func saveFailure(taskID: UUID, account: Account, type: TaskFailure.ResourceType,
@@ -474,9 +474,9 @@ final class SQLiteArchiveRepository: ArchiveRepository {
                 ))
             }
             let videos = Self.jsonStrings(row["video_urls_json"])
-            if let video = videos.first {
+            for (index, video) in videos.enumerated() {
                 items.append(MediaTimelineItem(
-                    key: "\(id)-video",
+                    key: "\(id)-video-\(index)",
                     dynamicID: id,
                     mediaType: .video,
                     pictureIndex: nil,
@@ -491,14 +491,20 @@ final class SQLiteArchiveRepository: ArchiveRepository {
         }
         let countRows = try self.database.executeQuery(
             """
-            SELECT COUNT(*) AS total FROM archive_posts
+            SELECT picture_urls_json, video_urls_json FROM archive_posts
             WHERE account_id=? AND category IN ('self','other')
               AND (picture_urls_json IS NOT NULL OR video_urls_json IS NOT NULL)
               \(yearFilter)
             """,
             arguments: Array(arguments.dropLast(2))
         )
-        return MediaTimelinePage(items: items, total: Self.int(countRows.first?["total"]), years: years)
+        // 总数按媒体条目计, 不是按动态条数
+        let total = countRows.reduce(0) { partial, row in
+            partial
+                + Self.jsonStrings(row["picture_urls_json"]).count
+                + Self.jsonStrings(row["video_urls_json"]).count
+        }
+        return MediaTimelinePage(items: items, total: total, years: years)
     }
 
     // MARK: - 游标与频率
@@ -640,19 +646,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
 
     // MARK: - 任务
 
-    /// 把账号 UUID 解析成表内统一使用的 QQ 号
-    private func resolveAccountUin(_ accountID: UUID) throws -> String {
-        let rows = try database.executeQuery(
-            "SELECT qq_uin FROM accounts WHERE id=?",
-            arguments: [accountID.uuidString]
-        )
-        if let uin = rows.first?["qq_uin"] as? String, !uin.isEmpty { return uin }
-        return accountID.uuidString
-    }
-
-    func upsertTask(_ task: ArchiveTask) throws {
-        // archive_tasks.account_id 统一存 QQ 号 (与动态/检查点等表一致), 模型持有 UUID, 这里映射一次
-        let accountUin = try resolveAccountUin(task.accountID)
+    func upsertTask(_ task: ArchiveTask, account: Account) throws {
         _ = try self.database.executeUpdate(
             """
             INSERT INTO archive_tasks
@@ -669,7 +663,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
               updated_at=excluded.updated_at
             """,
             arguments: [
-                task.id, accountUin, task.taskType, task.status.rawValue, task.cursor,
+                task.id, account.qqUin, task.taskType, task.status.rawValue, task.cursor,
                 task.currentPage, task.discoveredCount, task.savedCount, task.skippedCount,
                 task.failedCount, task.downloadedCount, task.startedAt, task.finishedAt,
                 task.lastError, task.createdAt, Date(),
