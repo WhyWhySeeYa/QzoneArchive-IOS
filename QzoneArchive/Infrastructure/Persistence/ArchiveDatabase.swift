@@ -377,7 +377,7 @@ final class ArchiveDatabase {
 extension ArchiveDatabase {
     /// 删除全部业务表并重建空表结构
     func resetDatabase() throws {
-        close()
+        try ensureOpen()
         let tables = [
             "archive_posts", "media_assets", "comments", "likes",
             "archive_tasks", "task_failures", "archive_skips",
@@ -386,6 +386,7 @@ extension ArchiveDatabase {
         for table in tables {
             try executeUpdate("DROP TABLE IF EXISTS \(table)", arguments: [])
         }
-        try open()
+        // 表被删掉后要重新建。open() 见句柄非空会直接返回, 这里显式重跑建表
+        try queue.sync { try createSchema() }
     }
 }
