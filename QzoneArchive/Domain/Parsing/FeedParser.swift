@@ -401,7 +401,7 @@ enum FeedParser {
     }
 
     /// 数组下标只接受纯十进制数字 (对应 JS 的 ^\d+$ 判定)
-    private static func isDecimalToken(_ token: Substring) -> Bool {
+    private static func isDecimalToken(_ token: String) -> Bool {
         !token.isEmpty && token.utf8.allSatisfy { (0x30...0x39).contains($0) }
     }
 
