@@ -65,9 +65,19 @@ final class ArchiveDatabase {
         }
     }
 
+    /// 已打开的句柄, 不触发自动打开。
+    /// open() 自己会 queue.sync, 而 currentHandle 是在 queue.sync 闭包内读的,
+    /// 在这里再调 open() 就是对同一串行队列重入 sync —— libdispatch 会直接 abort
     private var currentHandle: OpaquePointer? {
-        if handle == nil { try? open() }
-        return handle
+        handle
+    }
+
+    /// 确保数据库已打开。必须在任何 queue.sync 之外调用 (见 currentHandle 注释)
+    private func ensureOpen() throws {
+        let needsOpen = queue.sync { handle == nil }
+        if needsOpen {
+            try open()
+        }
     }
 
     // MARK: - Schema
@@ -250,7 +260,8 @@ final class ArchiveDatabase {
     /// 执行写入语句, 返回受影响行数
     @discardableResult
     func executeUpdate(_ sql: String, arguments: [Any?]) throws -> Int {
-        try queue.sync {
+        try ensureOpen()
+        return try queue.sync {
             guard let db = currentHandle else { throw DatabaseError.openFailed("数据库未打开") }
             var statement: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -268,7 +279,8 @@ final class ArchiveDatabase {
 
     /// 查询, 返回字典数组
     func executeQuery(_ sql: String, arguments: [Any?]) throws -> [[String: Any]] {
-        try queue.sync {
+        try ensureOpen()
+        return try queue.sync {
             guard let db = currentHandle else { throw DatabaseError.openFailed("数据库未打开") }
             var statement: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -310,7 +322,8 @@ final class ArchiveDatabase {
     /// 在事务中执行多个写入
     @discardableResult
     func inTransaction<T>(_ block: () throws -> T) throws -> T {
-        try queue.sync {
+        try ensureOpen()
+        return try queue.sync {
             guard let db = currentHandle else { throw DatabaseError.openFailed("数据库未打开") }
             if sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) != SQLITE_OK {
                 throw DatabaseError.execFailed(String(cString: sqlite3_errmsg(db)))
