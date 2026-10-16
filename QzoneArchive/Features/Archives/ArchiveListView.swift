@@ -34,7 +34,7 @@ struct ArchiveListView: View {
         }
         .navigationTitle("归档库")
         .onAppear { viewModel.load() }
-        .searchable(text: $viewModel.keyword, placement: .navigationBarDrawer(displayMode: .inline)) {
+        .searchable(text: $viewModel.keyword, placement: .navigationBarDrawer(displayMode: .always)) {
             Button("搜索") { viewModel.search() }
         }
         .toolbar {

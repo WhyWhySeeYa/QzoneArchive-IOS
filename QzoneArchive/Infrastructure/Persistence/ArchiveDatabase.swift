@@ -32,7 +32,7 @@ final class ArchiveDatabase {
 
     /// 打开数据库并建表
     func open() throws {
-        queue.sync {
+        try queue.sync {
             guard handle == nil else { return }
             let url = storage.databaseURL
             storage.ensureDirectory(storage.databaseDirectory)
@@ -308,17 +308,19 @@ final class ArchiveDatabase {
     }
 
     /// 在事务中执行多个写入
-    func inTransaction(_ block: () throws -> Void) throws {
+    @discardableResult
+    func inTransaction<T>(_ block: () throws -> T) throws -> T {
         try queue.sync {
             guard let db = currentHandle else { throw DatabaseError.openFailed("数据库未打开") }
             if sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) != SQLITE_OK {
                 throw DatabaseError.execFailed(String(cString: sqlite3_errmsg(db)))
             }
             do {
-                try block()
+                let value = try block()
                 if sqlite3_exec(db, "COMMIT;", nil, nil, nil) != SQLITE_OK {
                     throw DatabaseError.execFailed(String(cString: sqlite3_errmsg(db)))
                 }
+                return value
             } catch {
                 sqlite3_exec(db, "ROLLBACK;", nil, nil, nil)
                 throw error

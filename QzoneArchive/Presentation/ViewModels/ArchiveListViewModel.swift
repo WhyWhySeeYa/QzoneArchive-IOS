@@ -35,23 +35,19 @@ final class ArchiveListViewModel: ObservableObject {
         guard let account = environment.sessionAccount else { return }
         isLoading = true
         selection.removeAll()
+        let database = environment.database
+        let category = selectedCategory
+        let limit = pageSize
         Task {
-            let result = await Task.detached(priority: .userInitiated) {
-                let repo = SQLiteArchiveRepository(database: self.environment.database)
-                let items = (try? repo.listPosts(
-                    account: account,
-                    category: self.selectedCategory,
-                    limit: self.pageSize,
-                    offset: 0
-                )) ?? []
-                let count = (try? repo.countPosts(account: account, category: self.selectedCategory)) ?? 0
+            let result = await Task.detached(priority: .userInitiated) { () -> ([ArchivePost], Int) in
+                let repo = SQLiteArchiveRepository(database: database)
+                let items = (try? repo.listPosts(account: account, category: category, limit: limit, offset: 0)) ?? []
+                let count = (try? repo.countPosts(account: account, category: category)) ?? 0
                 return (items, count)
             }.value
-            await MainActor.run {
-                self.posts = result.0
-                self.total = result.1
-                self.isLoading = false
-            }
+            self.posts = result.0
+            self.total = result.1
+            self.isLoading = false
         }
     }
 
@@ -63,20 +59,17 @@ final class ArchiveListViewModel: ObservableObject {
               item.id == posts.last?.id
         else { return }
         isLoadingMore = true
+        let database = environment.database
+        let category = selectedCategory
+        let limit = pageSize
+        let offset = posts.count
         Task {
-            let result = await Task.detached(priority: .userInitiated) {
-                let repo = SQLiteArchiveRepository(database: self.environment.database)
-                return (try? repo.listPosts(
-                    account: account,
-                    category: self.selectedCategory,
-                    limit: self.pageSize,
-                    offset: self.posts.count
-                )) ?? []
+            let result = await Task.detached(priority: .userInitiated) { () -> [ArchivePost] in
+                let repo = SQLiteArchiveRepository(database: database)
+                return (try? repo.listPosts(account: account, category: category, limit: limit, offset: offset)) ?? []
             }.value
-            await MainActor.run {
-                self.posts.append(contentsOf: result)
-                self.isLoadingMore = false
-            }
+            self.posts.append(contentsOf: result)
+            self.isLoadingMore = false
         }
     }
 
@@ -84,28 +77,24 @@ final class ArchiveListViewModel: ObservableObject {
     func search() {
         guard let account = environment.sessionAccount else { return }
         isLoading = true
+        let database = environment.database
+        let category = selectedCategory
+        let limit = pageSize
+        let keyword = self.keyword
         Task {
-            let result: ([ArchivePost], Int) = await Task.detached(priority: .userInitiated) {
-                let repo = SQLiteArchiveRepository(database: self.environment.database)
-                let keyword = self.keyword
+            let result = await Task.detached(priority: .userInitiated) { () -> ([ArchivePost], Int) in
+                let repo = SQLiteArchiveRepository(database: database)
                 if keyword.trimmingCharacters(in: .whitespaces).isEmpty {
-                    let items = (try? repo.listPosts(
-                        account: account,
-                        category: self.selectedCategory,
-                        limit: self.pageSize,
-                        offset: 0
-                    )) ?? []
-                    let count = (try? repo.countPosts(account: account, category: self.selectedCategory)) ?? 0
+                    let items = (try? repo.listPosts(account: account, category: category, limit: limit, offset: 0)) ?? []
+                    let count = (try? repo.countPosts(account: account, category: category)) ?? 0
                     return (items, count)
                 }
-                let items = (try? repo.searchPosts(account: account, keyword: keyword, limit: 200)) ?? []
+                let items = (try? repo.searchPosts(account: account, keyword: keyword, limit: 200, offset: 0)) ?? []
                 return (items, items.count)
             }.value
-            await MainActor.run {
-                self.posts = result.0
-                self.total = result.1
-                self.isLoading = false
-            }
+            self.posts = result.0
+            self.total = result.1
+            self.isLoading = false
         }
     }
 
@@ -115,15 +104,14 @@ final class ArchiveListViewModel: ObservableObject {
         let ids = Array(selection)
         Task {
             do {
+                let database = self.environment.database
                 let count = try await Task.detached(priority: .userInitiated) {
-                    let repo = SQLiteArchiveRepository(database: self.environment.database)
+                    let repo = SQLiteArchiveRepository(database: database)
                     return try repo.deletePosts(account: account, ids: ids)
                 }.value
-                await MainActor.run {
-                    self.notice = "已删除 \(count) 条归档"
-                    self.selection.removeAll()
-                    self.load()
-                }
+                self.notice = "已删除 \(count) 条归档"
+                self.selection.removeAll()
+                self.load()
             } catch {
                 await MainActor.run { self.notice = error.localizedDescription }
             }
@@ -136,16 +124,15 @@ final class ArchiveListViewModel: ObservableObject {
         let category = selectedCategory
         Task {
             do {
+                let database = self.environment.database
                 let count = try await Task.detached(priority: .userInitiated) {
-                    let repo = SQLiteArchiveRepository(database: self.environment.database)
+                    let repo = SQLiteArchiveRepository(database: database)
                     return try repo.clearPosts(account: account)
                 }.value
-                await MainActor.run {
-                    self.notice = "已清空\(category.displayName)共 \(count) 条"
-                    self.load()
-                }
+                self.notice = "已清空\(category.displayName)共 \(count) 条"
+                self.load()
             } catch {
-                await MainActor.run { self.notice = error.localizedDescription }
+                self.notice = error.localizedDescription
             }
         }
     }

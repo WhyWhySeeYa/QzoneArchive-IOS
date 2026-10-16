@@ -94,7 +94,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     // MARK: - 账号
 
     func loadActiveAccount() throws -> Account? {
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             "SELECT * FROM accounts WHERE is_active=1 ORDER BY last_login_at DESC LIMIT 1",
             arguments: []
         )
@@ -102,11 +102,11 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func saveAccount(_ account: Account) throws {
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             "UPDATE accounts SET is_active=0 WHERE qq_uin<>?",
             arguments: [account.qqUin]
         )
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             """
             INSERT INTO accounts (id, qq_uin, nickname, avatar_url, last_login_at, created_at, updated_at, is_active)
             VALUES (?,?,?,?,?,?,?,1)
@@ -122,7 +122,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func listAccounts() throws -> [Account] {
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             "SELECT * FROM accounts ORDER BY last_login_at DESC",
             arguments: []
         )
@@ -130,15 +130,15 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func deleteAccount(uin: String) throws {
-        _ = try database.executeUpdate("DELETE FROM accounts WHERE qq_uin=?", arguments: [uin])
-        _ = try database.executeUpdate("DELETE FROM archive_posts WHERE account_id=?", arguments: [uin])
-        _ = try database.executeUpdate("DELETE FROM media_assets WHERE account_id=?", arguments: [uin])
-        _ = try database.executeUpdate("DELETE FROM comments WHERE account_id=?", arguments: [uin])
-        _ = try database.executeUpdate("DELETE FROM likes WHERE account_id=?", arguments: [uin])
-        _ = try database.executeUpdate("DELETE FROM archive_tasks WHERE account_id=?", arguments: [uin])
-        _ = try database.executeUpdate("DELETE FROM archive_skips WHERE account_id=?", arguments: [uin])
-        _ = try database.executeUpdate("DELETE FROM archive_checkpoints WHERE account_id=?", arguments: [uin])
-        _ = try database.executeUpdate("DELETE FROM archive_rate_limits WHERE account_id=?", arguments: [uin])
+        _ = try self.database.executeUpdate("DELETE FROM accounts WHERE qq_uin=?", arguments: [uin])
+        _ = try self.database.executeUpdate("DELETE FROM archive_posts WHERE account_id=?", arguments: [uin])
+        _ = try self.database.executeUpdate("DELETE FROM media_assets WHERE account_id=?", arguments: [uin])
+        _ = try self.database.executeUpdate("DELETE FROM comments WHERE account_id=?", arguments: [uin])
+        _ = try self.database.executeUpdate("DELETE FROM likes WHERE account_id=?", arguments: [uin])
+        _ = try self.database.executeUpdate("DELETE FROM archive_tasks WHERE account_id=?", arguments: [uin])
+        _ = try self.database.executeUpdate("DELETE FROM archive_skips WHERE account_id=?", arguments: [uin])
+        _ = try self.database.executeUpdate("DELETE FROM archive_checkpoints WHERE account_id=?", arguments: [uin])
+        _ = try self.database.executeUpdate("DELETE FROM archive_rate_limits WHERE account_id=?", arguments: [uin])
     }
 
     private static func account(from row: [String: Any]) -> Account {
@@ -157,10 +157,10 @@ final class SQLiteArchiveRepository: ArchiveRepository {
 
     func savePosts(_ posts: [ArchivePost], account: Account) throws -> Int {
         guard !posts.isEmpty else { return 0 }
-        return try database.inTransaction {
+        return try self.database.inTransaction {
             var saved = 0
             for post in posts {
-                let changes = try database.executeUpdate(
+                let changes = try self.database.executeUpdate(
                     """
                     INSERT INTO archive_posts
                      (account_id, source_id, author_uin, author_name, content_text, published_at,
@@ -202,7 +202,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
 
     private func saveLikes(account: Account, post: ArchivePost) throws {
         for like in post.likes {
-            _ = try database.executeUpdate(
+            _ = try self.database.executeUpdate(
                 """
                 INSERT OR IGNORE INTO likes (id, account_id, post_id, author_uin, author_name, created_at)
                 VALUES (?,?,?,?,?,?)
@@ -217,7 +217,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
 
     private func saveComments(account: Account, post: ArchivePost) throws {
         for comment in post.comments {
-            _ = try database.executeUpdate(
+            _ = try self.database.executeUpdate(
                 """
                 INSERT OR REPLACE INTO comments
                  (id, account_id, post_id, parent_id, author_uin, author_name, content_text, published_at, created_at)
@@ -230,7 +230,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
                 ]
             )
             for reply in comment.replies {
-                _ = try database.executeUpdate(
+                _ = try self.database.executeUpdate(
                     """
                     INSERT OR REPLACE INTO comments
                      (id, account_id, post_id, parent_id, author_uin, author_name, content_text, published_at, created_at)
@@ -248,7 +248,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func listPosts(account: Account, category: ArchiveCategory, limit: Int, offset: Int) throws -> [ArchivePost] {
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             """
             SELECT * FROM archive_posts
             WHERE account_id=? AND category=?
@@ -260,7 +260,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func countPosts(account: Account, category: ArchiveCategory) throws -> Int {
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             "SELECT COUNT(*) AS total FROM archive_posts WHERE account_id=? AND category=?",
             arguments: [account.qqUin, category.raw]
         )
@@ -268,7 +268,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func fetchPost(account: Account, id: Int) throws -> ArchivePost {
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             "SELECT * FROM archive_posts WHERE account_id=? AND id=?",
             arguments: [account.qqUin, id]
         )
@@ -278,22 +278,22 @@ final class SQLiteArchiveRepository: ArchiveRepository {
 
     func deletePosts(account: Account, ids: [Int]) throws -> Int {
         guard !ids.isEmpty else { return 0 }
-        return try database.inTransaction {
+        return try self.database.inTransaction {
             var count = 0
             for id in ids {
-                _ = try database.executeUpdate(
+                _ = try self.database.executeUpdate(
                     "DELETE FROM comments WHERE account_id=? AND post_id=(SELECT source_id FROM archive_posts WHERE account_id=? AND id=?)",
                     arguments: [account.qqUin, account.qqUin, id]
                 )
-                _ = try database.executeUpdate(
+                _ = try self.database.executeUpdate(
                     "DELETE FROM likes WHERE account_id=? AND post_id=(SELECT source_id FROM archive_posts WHERE account_id=? AND id=?)",
                     arguments: [account.qqUin, account.qqUin, id]
                 )
-                _ = try database.executeUpdate(
+                _ = try self.database.executeUpdate(
                     "DELETE FROM media_assets WHERE account_id=? AND post_id=(SELECT source_id FROM archive_posts WHERE account_id=? AND id=?)",
                     arguments: [account.qqUin, account.qqUin, id]
                 )
-                count += try database.executeUpdate(
+                count += try self.database.executeUpdate(
                     "DELETE FROM archive_posts WHERE account_id=? AND id=?",
                     arguments: [account.qqUin, id]
                 )
@@ -303,23 +303,23 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func clearPosts(account: Account) throws -> Int {
-        try database.inTransaction {
-            let count = try database.executeUpdate(
+        try self.database.inTransaction {
+            let count = try self.database.executeUpdate(
                 "DELETE FROM archive_posts WHERE account_id=?",
                 arguments: [account.qqUin]
             )
-            _ = try database.executeUpdate("DELETE FROM comments WHERE account_id=?", arguments: [account.qqUin])
-            _ = try database.executeUpdate("DELETE FROM likes WHERE account_id=?", arguments: [account.qqUin])
-            _ = try database.executeUpdate("DELETE FROM media_assets WHERE account_id=?", arguments: [account.qqUin])
-            _ = try database.executeUpdate("DELETE FROM archive_checkpoints WHERE account_id=?", arguments: [account.qqUin])
-            _ = try database.executeUpdate("DELETE FROM archive_rate_limits WHERE account_id=?", arguments: [account.qqUin])
+            _ = try self.database.executeUpdate("DELETE FROM comments WHERE account_id=?", arguments: [account.qqUin])
+            _ = try self.database.executeUpdate("DELETE FROM likes WHERE account_id=?", arguments: [account.qqUin])
+            _ = try self.database.executeUpdate("DELETE FROM media_assets WHERE account_id=?", arguments: [account.qqUin])
+            _ = try self.database.executeUpdate("DELETE FROM archive_checkpoints WHERE account_id=?", arguments: [account.qqUin])
+            _ = try self.database.executeUpdate("DELETE FROM archive_rate_limits WHERE account_id=?", arguments: [account.qqUin])
             return count
         }
     }
 
     func searchPosts(account: Account, keyword: String, limit: Int, offset: Int) throws -> [ArchivePost] {
         let pattern = "%\(keyword)%"
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             """
             SELECT * FROM archive_posts
             WHERE account_id=? AND content_text LIKE ?
@@ -332,7 +332,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
 
     func countSearchResults(account: Account, keyword: String) throws -> Int {
         let pattern = "%\(keyword)%"
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             "SELECT COUNT(*) AS total FROM archive_posts WHERE account_id=? AND content_text LIKE ?",
             arguments: [account.qqUin, pattern]
         )
@@ -348,7 +348,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
                 arguments: [account.qqUin]
             ).first?["total"]
         )
-        let interaction = try database.executeQuery(
+        let interaction = try self.database.executeQuery(
             """
             SELECT COALESCE(SUM(CASE WHEN 1=1 THEN 1 ELSE 0 END),0) AS likes FROM likes WHERE account_id=?
             """,
@@ -361,7 +361,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
                 arguments: [account.qqUin]
             ).first?["total"]
         )
-        let pictureRows = try database.executeQuery(
+        let pictureRows = try self.database.executeQuery(
             "SELECT picture_urls_json FROM archive_posts WHERE account_id=? AND picture_urls_json IS NOT NULL",
             arguments: [account.qqUin]
         )
@@ -392,7 +392,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func interactionRanking(account: Account, limit: Int) throws -> [InteractionRank] {
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             """
             SELECT author_uin AS uin,
                    COALESCE(NULLIF(MAX(author_name),''), author_uin) AS nickname,
@@ -424,7 +424,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
             yearFilter = "AND CAST(strftime('%Y', published_at, 'unixepoch') AS INTEGER)=?"
             arguments.append(year)
         }
-        let yearRows = try database.executeQuery(
+        let yearRows = try self.database.executeQuery(
             """
             SELECT DISTINCT CAST(strftime('%Y', published_at, 'unixepoch') AS INTEGER) AS year
             FROM archive_posts
@@ -438,7 +438,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
 
         arguments.append(max(1, limit))
         arguments.append(max(0, offset))
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             """
             SELECT id, published_at, content, author_uin, author_name,
                    picture_urls_json, video_urls_json, video_cover_url
@@ -488,7 +488,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
                 ))
             }
         }
-        let countRows = try database.executeQuery(
+        let countRows = try self.database.executeQuery(
             """
             SELECT COUNT(*) AS total FROM archive_posts
             WHERE account_id=? AND category IN ('self','other')
@@ -503,7 +503,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     // MARK: - 游标与频率
 
     func saveCheckpoint(account: Account, attachInfo: String, pages: Int, fetched: Int, saved: Int) throws {
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             """
             INSERT INTO archive_checkpoints (account_id, attach_info, pages, fetched, saved, updated_at)
             VALUES (?,?,?,?,?,?)
@@ -516,7 +516,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func loadCheckpoint(account: Account) throws -> (attachInfo: String, pages: Int, fetched: Int, saved: Int, updatedAt: Date)? {
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             "SELECT * FROM archive_checkpoints WHERE account_id=?",
             arguments: [account.qqUin]
         )
@@ -528,7 +528,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func clearCheckpoint(account: Account) throws {
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             "DELETE FROM archive_checkpoints WHERE account_id=?",
             arguments: [account.qqUin]
         )
@@ -540,7 +540,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func saveRateWindow(account: Account, startedAt: Date, pages: Int, retryAt: Date?) throws {
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             """
             INSERT INTO archive_rate_limits (account_id, window_started_at, pages, retry_at)
             VALUES (?,?,?,?)
@@ -552,7 +552,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func loadRateWindow(account: Account) throws -> (startedAt: Date, pages: Int, retryAt: Date?)? {
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             "SELECT * FROM archive_rate_limits WHERE account_id=?",
             arguments: [account.qqUin]
         )
@@ -562,7 +562,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func clearRateWindow(account: Account) throws {
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             "DELETE FROM archive_rate_limits WHERE account_id=?",
             arguments: [account.qqUin]
         )
@@ -572,7 +572,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
 
     func recordSkip(account: Account, pageNumber: Int, cursorOffset: Int, offsetAdvance: Int,
                     baseTime: Int, error: String, cursor: String) throws {
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             """
             INSERT INTO archive_skips
              (account_id, page_number, cursor_offset, offset_advance, base_time, error, skipped_at, cursor)
@@ -583,7 +583,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func listSkips(account: Account) throws -> [ArchiveSkipRow] {
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             "SELECT * FROM archive_skips WHERE account_id=? ORDER BY skipped_at ASC",
             arguments: [account.qqUin]
         )
@@ -606,7 +606,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func listPendingSkipIDs(account: Account) throws -> [Int] {
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             "SELECT id FROM archive_skips WHERE account_id=? AND resolved_at IS NULL ORDER BY skipped_at ASC",
             arguments: [account.qqUin]
         )
@@ -614,7 +614,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func resolveSkip(account: Account, id: Int, recoveredRecords: Int) throws {
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             """
             UPDATE archive_skips SET retry_count=retry_count+1, last_retry_at=?,
               resolved_at=?, recovered_records=? WHERE id=? AND account_id=?
@@ -624,14 +624,14 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func failSkip(account: Account, id: Int, error: String) throws {
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             "UPDATE archive_skips SET retry_count=retry_count+1, last_retry_at=?, error=? WHERE id=? AND account_id=?",
             arguments: [Date(), error, id, account.qqUin]
         )
     }
 
     func clearResolvedSkips(account: Account) throws {
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             "DELETE FROM archive_skips WHERE account_id=? AND resolved_at IS NOT NULL",
             arguments: [account.qqUin]
         )
@@ -640,7 +640,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     // MARK: - 任务
 
     func upsertTask(_ task: ArchiveTask) throws {
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             """
             INSERT INTO archive_tasks
              (id, account_id, task_type, status, cursor, current_page, discovered_count,
@@ -665,7 +665,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func loadTask(account: Account, taskType: String) throws -> ArchiveTask? {
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             "SELECT * FROM archive_tasks WHERE account_id=? AND task_type=? ORDER BY updated_at DESC LIMIT 1",
             arguments: [account.qqUin, taskType]
         )
@@ -689,7 +689,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func clearTasks(account: Account) throws {
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             "DELETE FROM archive_tasks WHERE account_id=?",
             arguments: [account.qqUin]
         )
@@ -697,7 +697,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
 
     func saveFailure(taskID: UUID, account: Account, type: TaskFailure.ResourceType,
                      resourceID: String, code: String?, message: String) throws {
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             """
             INSERT INTO task_failures
              (id, task_id, account_id, resource_type, resource_id, error_code, error_message, retry_count, resolved, created_at, updated_at)
@@ -711,7 +711,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func listFailures(account: Account, resolved: Bool) throws -> [TaskFailure] {
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             "SELECT * FROM task_failures WHERE account_id=? AND resolved=? ORDER BY created_at DESC",
             arguments: [account.qqUin, resolved ? 1 : 0]
         )
@@ -732,7 +732,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     }
 
     func resolveFailure(id: UUID) throws {
-        _ = try database.executeUpdate(
+        _ = try self.database.executeUpdate(
             "UPDATE task_failures SET resolved=1, updated_at=? WHERE id=?",
             arguments: [Date(), id]
         )
@@ -773,11 +773,11 @@ final class SQLiteArchiveRepository: ArchiveRepository {
 
     private func loadComments(account: Account, sourceID: String) throws -> [ArchivedComment] {
         guard !sourceID.isEmpty else { return [] }
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             "SELECT * FROM comments WHERE account_id=? AND post_id=? ORDER BY published_at ASC, created_at ASC",
             arguments: [account.qqUin, sourceID]
         )
-        let replies = try database.executeQuery(
+        let replies = try self.database.executeQuery(
             "SELECT * FROM comments WHERE account_id=? AND post_id=? AND parent_id IS NOT NULL ORDER BY published_at ASC",
             arguments: [account.qqUin, sourceID]
         )
@@ -811,7 +811,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
 
     private func loadLikes(account: Account, sourceID: String) throws -> [LikeUser] {
         guard !sourceID.isEmpty else { return [] }
-        let rows = try database.executeQuery(
+        let rows = try self.database.executeQuery(
             "SELECT author_uin, author_name FROM likes WHERE account_id=? AND post_id=?",
             arguments: [account.qqUin, sourceID]
         )

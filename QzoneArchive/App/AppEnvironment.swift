@@ -58,7 +58,7 @@ final class AppEnvironment: ObservableObject {
         let database = ArchiveDatabase()
         let storage = FileStorageService()
         let mediaManager = MediaDownloadManager(storage: storage, logger: logger)
-        let archiveEngine = ArchiveEngine(database: database, api: api, mediaManager: mediaManager, storage: storage, logger: logger)
+        let archiveEngine = ArchiveEngine(database: database, api: api, mediaManager: mediaManager, logger: logger)
         let exportService = ExportService(database: database, storage: storage)
         return AppEnvironment(
             settings: settings,
