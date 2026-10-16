@@ -199,6 +199,7 @@ final class ArchiveRepositoryTests: XCTestCase {
         post.likes = [LikeUser(uin: "999", nickname: "好友A"), LikeUser(uin: "888", nickname: "好友B")]
         post.comments = [
             ParsedComment(id: "c1", uin: "999", nickname: "好友A", content: "评论", createdAt: 1, replies: [])
+                .toArchived(postID: post.sourceID)
         ]
         _ = try repository.savePosts([post], account: account)
         let ranking = try repository.interactionRanking(account: account, limit: 10)
