@@ -102,9 +102,13 @@ jobs:
           zip -qr QzoneArchive-simulator.zip "$APP"
 
           DEVICE_APP=$(find build/DeviceData/Build/Products/Release-iphoneos -name "QzoneArchive.app" -type d | head -1)
+          mkdir -p Payload
           cp -r "$DEVICE_APP" Payload/
           zip -qry QzoneArchive-device-unsigned.ipa Payload
           rm -rf Payload
+          # ipa 结构自检：必须是 Payload/QzoneArchive.app/…
+          unzip -l QzoneArchive-device-unsigned.ipa | grep -q "Payload/QzoneArchive.app/Info.plist" \
+            || { echo "ipa 结构错误"; exit 1; }
           # 平台标记自检：真机包必须是 iphoneos，模拟器包是 iphonesimulator
           echo "--- device ipa platform check ---"
           /usr/libexec/PlistBuddy -c "Print :CFBundleSupportedPlatforms:0" "$DEVICE_APP/Info.plist"
