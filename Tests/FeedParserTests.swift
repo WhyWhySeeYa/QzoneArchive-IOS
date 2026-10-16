@@ -112,7 +112,7 @@ final class FeedParserTests: XCTestCase {
     func testOriginalDynamicCategorySelf() {
         let dynamic = FeedParser.parseOriginalDynamic(rawFeed(), ownerUin: ownerUin)
         XCTAssertEqual(dynamic?.cellID, "cell-1")
-        XCTAssertEqual(dynamic?.category, .self_)
+        XCTAssertEqual(dynamic?.category, ArchiveCategory.self_)
         XCTAssertEqual(dynamic?.authorUin, ownerUin)
         XCTAssertEqual(dynamic?.content, "自己的动态")
         XCTAssertEqual(dynamic?.publishedAt, 1_700_000_000)
@@ -124,7 +124,7 @@ final class FeedParserTests: XCTestCase {
             rawFeed(actorUin: "987654321", actorName: "路人", content: "别人的动态"),
             ownerUin: ownerUin
         )
-        XCTAssertEqual(dynamic?.category, .other)
+        XCTAssertEqual(dynamic?.category, ArchiveCategory.other)
         XCTAssertEqual(dynamic?.authorName, "路人")
     }
 
@@ -133,15 +133,15 @@ final class FeedParserTests: XCTestCase {
             rawFeed(eventType: 217, appid: 334, actorUin: "555", actorName: "板主"),
             ownerUin: ownerUin
         )
-        XCTAssertEqual(dynamic?.category, .guestbook)
+        XCTAssertEqual(dynamic?.category, ArchiveCategory.guestbook)
     }
 
     func testOriginalDynamicGuestbookByFeedSkey() {
         let dynamic = FeedParser.parseOriginalDynamic(
-            rawFeed(feedSkey: "334_abcdef", eventType: 334),
+            rawFeed(eventType: 334, feedSkey: "334_abcdef"),
             ownerUin: ownerUin
         )
-        XCTAssertEqual(dynamic?.category, .guestbook)
+        XCTAssertEqual(dynamic?.category, ArchiveCategory.guestbook)
     }
 
     func testOriginalDynamicWithoutCellIDIsSkipped() {
@@ -245,7 +245,7 @@ final class FeedParserTests: XCTestCase {
         XCTAssertEqual(FeedParser.parseFeed(feed).content, "动态层内容")
         XCTAssertEqual(FeedParser.parseFeed(feed).eventSummary, "留了言")
         let dynamic = FeedParser.parseOriginalDynamic(feed, ownerUin: "123456789")
-        XCTAssertEqual(dynamic?.category, .guestbook)
+        XCTAssertEqual(dynamic?.category, ArchiveCategory.guestbook)
         XCTAssertEqual(dynamic?.content, "留了言")
         XCTAssertEqual(dynamic?.authorUin, "999")
     }
