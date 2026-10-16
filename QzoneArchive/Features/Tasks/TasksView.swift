@@ -144,15 +144,3 @@ struct TasksView: View {
     }
 }
 
-extension ArchiveTask.Status {
-    var title: String {
-        switch self {
-        case .pending: return "等待中"
-        case .running: return "正在归档"
-        case .paused: return "已暂停"
-        case .completed: return "已完成"
-        case .failed: return "失败"
-        case .cancelled: return "已取消"
-        }
-    }
-}
