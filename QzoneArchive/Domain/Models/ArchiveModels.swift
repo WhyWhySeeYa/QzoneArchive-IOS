@@ -326,8 +326,9 @@ struct ArchiveOverview {
 }
 
 /// 互动排行条目
-struct InteractionRank {
+struct InteractionRank: Identifiable {
     var uin: String
+    var id: String { uin }
     var nickname: String
     var interactions: Int
     var likes: Int

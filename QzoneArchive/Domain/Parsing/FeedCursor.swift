@@ -110,7 +110,7 @@ enum FeedCursor {
     /// 序列化键值表, 保留插入顺序
     static func serializeQueryPairs(_ pairs: [QueryPair]) -> String {
         var components = URLComponents()
-        components.queryItems = pairs.map { URLQueryItem(name: $0.key, value: $1.value) }
+        components.queryItems = pairs.map { pair in URLQueryItem(name: pair.key, value: pair.value) }
         let query = components.percentEncodedQuery ?? ""
         // 去掉首部的问号
         return query.hasPrefix("?") ? String(query.dropFirst()) : query

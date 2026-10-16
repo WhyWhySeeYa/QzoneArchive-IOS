@@ -37,7 +37,8 @@ struct MainView: View {
     }
 
     private var sidebar: some View {
-        List(TabItem.allCases, selection: $selectedTab) { item in
+        List(selection: $selectedTab) {
+            ForEach(TabItem.allCases) { item in
             NavigationLink(value: item) {
                 Label {
                     Text(item.title)
@@ -48,6 +49,7 @@ struct MainView: View {
                 }
             }
             .listRowBackground(Color.clear)
+            }
         }
         .listStyle(.sidebar)
     }
@@ -55,11 +57,11 @@ struct MainView: View {
     @ViewBuilder
     private var detailView: some View {
         switch selectedTab {
-        case .dashboard: DashboardView()
-        case .archives: ArchiveListView()
-        case .media: MediaLibraryView()
+        case .dashboard: DashboardView(environment: environment)
+        case .archives: ArchiveListView(environment: environment)
+        case .media: MediaLibraryView(environment: environment)
         case .contacts: ContactsView()
-        case .tasks: TasksView()
+        case .tasks: TasksView(environment: environment)
         case .settings: SettingsView()
         }
     }

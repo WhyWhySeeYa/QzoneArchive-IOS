@@ -61,7 +61,7 @@ actor QzoneAPIClient {
         attempts: Int = 6
     ) async throws -> QzoneFeedPage {
         let auth = try await credentials()
-        let credentials = QzoneFeedCredentials(
+        let feedCredentials = QzoneFeedCredentials(
             gTk: auth.gTk,
             cookies: auth.cookies,
             userAgent: auth.userAgent
@@ -72,7 +72,7 @@ actor QzoneAPIClient {
                 let (data, response) = try await performFeedRequest(
                     refreshType: refreshType,
                     attachInfo: attachInfo,
-                    credentials: credentials
+                    credentials: feedCredentials
                 )
                 let status = (response as? HTTPURLResponse)?.statusCode ?? 0
                 let body = Self.decodeText(data)
@@ -108,7 +108,7 @@ actor QzoneAPIClient {
     /// 只请求一次, 供引擎判定单页错误
     func fetchFeedsOnce(refreshType: FeedRefreshType, attachInfo: String?) async throws -> QzoneFeedPage {
         let auth = try await credentials()
-        let credentials = QzoneFeedCredentials(
+        let feedCredentials = QzoneFeedCredentials(
             gTk: auth.gTk,
             cookies: auth.cookies,
             userAgent: auth.userAgent
@@ -116,7 +116,7 @@ actor QzoneAPIClient {
         let (data, response) = try await performFeedRequest(
             refreshType: refreshType,
             attachInfo: attachInfo,
-            credentials: credentials
+            credentials: feedCredentials
         )
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         let body = Self.decodeText(data)
@@ -135,7 +135,7 @@ actor QzoneAPIClient {
     ) async throws -> (Data, URLResponse) {
         var components = URLComponents(string: feedsURL)!
         var queryItems = [
-            URLQueryItem(name: "g_tk", value: String(credentials.gTk)),
+            URLQueryItem(name: "g_tk", value: String(feedCredentials.gTk)),
             URLQueryItem(name: "res_type", value: "1"),
             URLQueryItem(name: "refresh_type", value: String(refreshType.rawValue)),
             URLQueryItem(name: "format", value: "json"),
@@ -162,14 +162,14 @@ actor QzoneAPIClient {
             "Pragma": "no-cache",
             "Origin": "https://mobile.qzone.qq.com",
             "Referer": "https://mobile.qzone.qq.com/",
-            "User-Agent": credentials.userAgent,
-            "Cookie": credentials.cookieHeader,
+            "User-Agent": feedCredentials.userAgent,
+            "Cookie": feedCredentials.cookieHeader,
             "Sec-Fetch-Dest": "empty",
             "Sec-Fetch-Mode": "cors",
             "Sec-Fetch-Site": "same-site",
-            "Sec-Ch-Ua": Self.secChUa(credentials.userAgent),
+            "Sec-Ch-Ua": Self.secChUa(feedCredentials.userAgent),
             "Sec-Ch-Ua-Mobile": "?1",
-            "Sec-Ch-Ua-Platform": Self.secPlatform(credentials.userAgent),
+            "Sec-Ch-Ua-Platform": Self.secPlatform(feedCredentials.userAgent),
         ]
         return headers
     }
