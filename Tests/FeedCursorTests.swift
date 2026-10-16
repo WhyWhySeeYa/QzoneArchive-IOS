@@ -9,10 +9,41 @@ import XCTest
 @testable import QzoneArchive
 
 final class FeedCursorTests: XCTestCase {
+    /// 真实游标是逐层编码的: back_server_info 的值编码一次, 整个 att 值再编码一次
+    /// (线上样例见 testParseRealCursorFromDesktopFixture)
     private func makeCursor(offset: Int, baseTime: Int, loadCount: Int) -> String {
-        let backend = "offset=\(offset)&basetime=\(baseTime)"
-        let attach = "back_server_info=\(backend)&loadcount=\(loadCount)"
-        return "att=\(attach)"
+        let backend = FeedCursor.serializeQueryPairs([
+            QueryPair(key: "offset", value: "\(offset)"),
+            QueryPair(key: "basetime", value: "\(baseTime)"),
+        ])
+        let attach = FeedCursor.serializeQueryPairs([
+            QueryPair(key: "back_server_info", value: backend),
+            QueryPair(key: "loadcount", value: "\(loadCount)"),
+        ])
+        return FeedCursor.serializeQueryPairs([QueryPair(key: "att", value: attach)])
+    }
+
+    /// 线上真实游标, 取自原项目 scripts/selftest.ts 的样例
+    private let realCursor = "att=back%5Fserver%5Finfo%3Doffset%253D1168%2526total%253D4%2526basetime%253D1495974154%2526feedsource%253D1&lastrefreshtime=1785906139&lastseparatortime=0&loadcount=77&refresh_id=1785906139&tl=1495974154"
+
+    func testParseRealCursorFromDesktopFixture() throws {
+        let details = try FeedCursor.parse(realCursor)
+        XCTAssertEqual(details.offset, 1168)
+        XCTAssertEqual(details.baseTime, 1_495_974_154)
+        XCTAssertEqual(details.loadCount, 77)
+    }
+
+    func testAdvanceRealCursorKeepsShape() throws {
+        let advanced = try FeedCursor.advance(realCursor, offsetAdvance: 20)
+        XCTAssertEqual(try FeedCursor.parse(advanced).offset, 1188)
+        // 外层有 loadcount 时只递增外层, att 形状保持原样
+        let outer = FeedCursor.parseQueryPairs(advanced) ?? []
+        XCTAssertEqual(outer.first(where: { $0.key == "loadcount" })?.value, "78")
+        XCTAssertEqual(
+            outer.first(where: { $0.key == "att" })?.value,
+            "back_server_info=offset%3D1188%26total%3D4%26basetime%3D1495974154%26feedsource%3D1"
+        )
+        XCTAssertTrue(advanced.hasPrefix("att="))
     }
 
     func testParseReadsThreeLayers() throws {

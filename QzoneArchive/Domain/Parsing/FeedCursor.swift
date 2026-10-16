@@ -22,8 +22,16 @@ extension Array where Element == QueryPair {
         first(where: { $0.key == key })?.value
     }
 
-    /// 按键更新或插入, 无匹配时追加到末尾
-    mutating func set(key: String, value: String) {
+    /// 改写已存在的键, 对应原实现 setPairValue: 键不存在即视为游标损坏
+    mutating func setExisting(key: String, value: String) throws {
+        guard let index = firstIndex(where: { $0.key == key }) else {
+            throw QzoneError.parseFailed("分页游标缺少 \(key)")
+        }
+        self[index].value = value
+    }
+
+    /// 存在则改写, 不存在则追加, 对应原实现 setOrAppendPairValue
+    mutating func setOrAppend(key: String, value: String) {
         if let index = firstIndex(where: { $0.key == key }) {
             self[index].value = value
         } else {
@@ -70,11 +78,11 @@ enum FeedCursor {
         else { throw QzoneError.parseFailed("分页游标结构不完整") }
         let loadCountInOuter = outer[key: "loadcount"] != nil
 
-        backend.set(key: "offset", value: String(details.offset + offsetAdvance))
-        attach.set(key: "back_server_info", value: serializeQueryPairs(backend))
-        if !loadCountInOuter { attach.set(key: "loadcount", value: String(details.loadCount + 1)) }
-        outer.set(key: "att", value: serializeQueryPairs(attach))
-        if loadCountInOuter { outer.set(key: "loadcount", value: String(details.loadCount + 1)) }
+        try backend.setExisting(key: "offset", value: String(details.offset + offsetAdvance))
+        try attach.setExisting(key: "back_server_info", value: serializeQueryPairs(backend))
+        if !loadCountInOuter { attach.setOrAppend(key: "loadcount", value: String(details.loadCount + 1)) }
+        try outer.setExisting(key: "att", value: serializeQueryPairs(attach))
+        if loadCountInOuter { outer.setOrAppend(key: "loadcount", value: String(details.loadCount + 1)) }
         return serializeQueryPairs(outer)
     }
 
@@ -100,19 +108,70 @@ enum FeedCursor {
         var result: [QueryPair] = []
         for pair in value.components(separatedBy: "&") where !pair.isEmpty {
             let parts = pair.split(separator: "=", maxSplits: 1)
-            let key = String(parts[0]).removingPercentEncoding ?? String(parts[0])
+            let key = formDecode(String(parts[0]))
             let raw = parts.count > 1 ? String(parts[1]) : ""
-            result.append(QueryPair(key: key, value: raw.removingPercentEncoding ?? raw))
+            result.append(QueryPair(key: key, value: formDecode(raw)))
         }
         return result
     }
 
     /// 序列化键值表, 保留插入顺序
+    /// 用 application/x-www-form-urlencoded 编码, 与 URLSearchParams.toString() 一致
     static func serializeQueryPairs(_ pairs: [QueryPair]) -> String {
-        var components = URLComponents()
-        components.queryItems = pairs.map { pair in URLQueryItem(name: pair.key, value: pair.value) }
-        let query = components.percentEncodedQuery ?? ""
-        // 去掉首部的问号
-        return query.hasPrefix("?") ? String(query.dropFirst()) : query
+        pairs
+            .map { "\(formEncode($0.key))=\(formEncode($0.value))" }
+            .joined(separator: "&")
+    }
+
+    /// 百分号解码: '+' 视作空格, 非法转义原样保留 (URLSearchParams 的行为)
+    private static func formDecode(_ value: String) -> String {
+        let bytes = Array(value.utf8)
+        var decoded: [UInt8] = []
+        decoded.reserveCapacity(bytes.count)
+        var index = 0
+        while index < bytes.count {
+            let byte = bytes[index]
+            if byte == 0x2B {
+                decoded.append(0x20)
+                index += 1
+            } else if byte == 0x25, index + 2 < bytes.count,
+                      let high = hexValue(bytes[index + 1]), let low = hexValue(bytes[index + 2]) {
+                decoded.append(high << 4 | low)
+                index += 3
+            } else {
+                decoded.append(byte)
+                index += 1
+            }
+        }
+        return String(decoding: decoded, as: UTF8.self)
+    }
+
+    /// 百分号编码: 保留 A-Za-z0-9 与 * - . _, 空格转 '+', 其余按 UTF-8 字节转义
+    private static func formEncode(_ value: String) -> String {
+        let digits = Array("0123456789ABCDEF".utf8)
+        var result = ""
+        result.reserveCapacity(value.utf8.count)
+        for byte in value.utf8 {
+            switch byte {
+            case 0x41...0x5A, 0x61...0x7A, 0x30...0x39, 0x2A, 0x2D, 0x2E, 0x5F:
+                result.append(Character(UnicodeScalar(byte)))
+            case 0x20:
+                result.append("+")
+            default:
+                result.append(Character(UnicodeScalar(0x25)))
+                result.append(Character(UnicodeScalar(digits[Int(byte >> 4)])))
+                result.append(Character(UnicodeScalar(digits[Int(byte & 0x0F)])))
+            }
+        }
+        return result
+    }
+
+    private static func hexValue(_ byte: UInt8) -> UInt8? {
+        switch byte {
+        case 0x30...0x39: return byte - 0x30
+        case 0x41...0x46: return byte - 0x41 + 10
+        case 0x61...0x66: return byte - 0x61 + 10
+        default: return nil
+        }
     }
 }
