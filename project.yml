@@ -37,8 +37,11 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.minis.QzoneArchive
         CODE_SIGN_ENTITLEMENTS: QzoneArchive/Resources/QzoneArchive.entitlements
         TARGETED_DEVICE_FAMILY: "1,2"
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
         INFOPLIST_KEY_UISupportedInterfaceOrientations_iPhone: UIInterfaceOrientationPortrait
         ENABLE_BITCODE: false
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
   QzoneArchiveTests:
     type: bundle.unit-test
     platform: iOS
@@ -50,6 +53,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.minis.QzoneArchiveTests
         GENERATE_INFOPLIST_FILE: true
+        IPHONEOS_DEPLOYMENT_TARGET: "16.0"
 schemes:
   QzoneArchive:
     build:

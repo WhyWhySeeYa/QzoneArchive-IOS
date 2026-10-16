@@ -181,30 +181,30 @@ struct OnboardingView: View {
         while !Task.isCancelled {
             do {
                 let status = try await environment.session.pollQRLogin()
-                switch status.status {
-                case .waiting:
-                    await MainActor.run { statusMessage = "请使用手机 QQ 扫描二维码" }
-                case .scanned:
-                    await MainActor.run { statusMessage = "已扫码，请在手机上确认登录" }
-                case .expired:
-                    await MainActor.run {
+                let kind = status.status
+                let message = status.message
+                await MainActor.run {
+                    switch kind {
+                    case .waiting:
+                        statusMessage = "请使用手机 QQ 扫描二维码"
+                    case .scanned:
+                        statusMessage = "已扫码，请在手机上确认登录"
+                    case .expired:
                         isRefreshing = false
                         statusMessage = "二维码已失效，请点击刷新"
-                    }
-                    return
-                case .success:
-                    let account = await environment.session.currentAccount()
-                    await MainActor.run {
-                        if let account { environment.handleLoginSuccess(account) }
+                    case .success:
+                        if let account = environment.sessionAccount {
+                            environment.handleLoginSuccess(account)
+                        }
                         appState.acceptDisclaimer()
                         appState.isLoggedIn = true
+                    case .error:
+                        statusMessage = message
+                    case .loggedOut:
+                        break
                     }
-                    return
-                case .error:
-                    await MainActor.run { statusMessage = status.message }
-                case .loggedOut:
-                    break
                 }
+                if kind == .expired || kind == .success { return }
             } catch {
                 await MainActor.run {
                     isRefreshing = false
@@ -216,10 +216,4 @@ struct OnboardingView: View {
             try? await Task.sleep(nanoseconds: 2_000_000_000)
         }
     }
-}
-
-#Preview {
-    OnboardingView()
-        .environmentObject(AppEnvironment.live())
-        .environmentObject(AppState(environment: AppEnvironment.live()))
 }
