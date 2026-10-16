@@ -75,8 +75,7 @@ actor LoginSession {
     /// 退出登录: 清空本地凭证与内存会话
     func logout() async {
         try? await credentials.clear()
-        session = nil
-        lastUserAgent = nil
+        self.session = nil
     }
 
     /// 本地保存的账号列表

@@ -80,25 +80,21 @@ final class AppSettingsStore: ObservableObject {
 
     init(userDefaults: UserDefaults = .standard) {
         defaults = userDefaults
-        _hasAcceptedDisclaimer = defaults.bool(forKey: Key.disclaimerAccepted)
-        let raw = defaults.string(forKey: Key.appearance) ?? AppearanceMode.system.rawValue
-        _appearance = AppearanceMode(rawValue: raw) ?? .system
-        if let data = defaults.data(forKey: Key.settings),
-           let decoded = try? JSONDecoder().decode(ArchiveSettings.self, from: data) {
-            _archiveSettings = decoded
-        } else {
-            _archiveSettings = ArchiveSettings()
-        }
+        let disclaimer = userDefaults.bool(forKey: Key.disclaimerAccepted)
+        let appearanceRaw = userDefaults.string(forKey: Key.appearance) ?? AppearanceMode.system.rawValue
+        let settings = (try? userDefaults.data(forKey: Key.settings))
+            .flatMap { try? JSONDecoder().decode(ArchiveSettings.self, from: $0) } ?? ArchiveSettings()
+        _hasAcceptedDisclaimer = Published(initialValue: disclaimer)
+        _appearance = Published(initialValue: AppearanceMode(rawValue: appearanceRaw) ?? .system)
+        _archiveSettings = Published(initialValue: settings)
     }
 
     @Published var hasAcceptedDisclaimer: Bool {
         didSet { defaults.set(hasAcceptedDisclaimer, forKey: Key.disclaimerAccepted) }
     }
-
     @Published var appearance: AppearanceMode {
         didSet { defaults.set(appearance.rawValue, forKey: Key.appearance) }
     }
-
     @Published var archiveSettings: ArchiveSettings {
         didSet {
             if let data = try? JSONEncoder().encode(archiveSettings) {

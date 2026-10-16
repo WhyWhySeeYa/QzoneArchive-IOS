@@ -131,7 +131,7 @@ actor QzoneAPIClient {
     private func performFeedRequest(
         refreshType: FeedRefreshType,
         attachInfo: String?,
-        credentials: QzoneFeedCredentials
+        feedCredentials: QzoneFeedCredentials
     ) async throws -> (Data, URLResponse) {
         var components = URLComponents(string: feedsURL)!
         var queryItems = [
@@ -148,13 +148,13 @@ actor QzoneAPIClient {
 
         var request = URLRequest(url: url)
         request.httpMethod = "GET"
-        let headers = feedHeaders(credentials: credentials)
+        let headers = feedHeaders(feedCredentials: feedCredentials)
         for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
         return try await urlSession.data(for: request)
     }
 
     /// 组装请求头, 逐项与原基准一致
-    private func feedHeaders(credentials: QzoneFeedCredentials) -> [String: String] {
+    private func feedHeaders(feedCredentials: QzoneFeedCredentials) -> [String: String] {
         var headers: [String: String] = [
             "Accept": "application/json",
             "Accept-Language": "zh-CN,zh;q=0.9",

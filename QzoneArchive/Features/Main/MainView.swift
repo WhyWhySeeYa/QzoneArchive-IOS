@@ -20,6 +20,9 @@ struct MainView: View {
                 .navigationBarTitleDisplayMode(.inline)
         } detail: {
             detailView
+                .navigationDestination(for: TabItem.self) { item in
+                    destination(for: item)
+                }
                 .navigationBarTitleDisplayMode(.inline)
         }
         .onAppear {
@@ -39,7 +42,7 @@ struct MainView: View {
     private var sidebar: some View {
         List(selection: $selectedTab) {
             ForEach(TabItem.allCases) { item in
-            NavigationLink(value: item) {
+                NavigationLink(value: item) {
                 Label {
                     Text(item.title)
                         .font(.subheadline.weight(.semibold))
@@ -47,8 +50,8 @@ struct MainView: View {
                     Image(systemName: item.icon)
                         .foregroundColor(selectedTab == item ? .accentColor : .secondary)
                 }
-            }
-            .listRowBackground(Color.clear)
+                }
+                .listRowBackground(Color.clear)
             }
         }
         .listStyle(.sidebar)
@@ -57,6 +60,18 @@ struct MainView: View {
     @ViewBuilder
     private var detailView: some View {
         switch selectedTab {
+        case .dashboard: DashboardView(environment: environment)
+        case .archives: ArchiveListView(environment: environment)
+        case .media: MediaLibraryView(environment: environment)
+        case .contacts: ContactsView()
+        case .tasks: TasksView(environment: environment)
+        case .settings: SettingsView()
+        }
+    }
+
+    /// NavigationLink 目的地
+    private func destination(for item: TabItem) -> some View {
+        switch item {
         case .dashboard: DashboardView(environment: environment)
         case .archives: ArchiveListView(environment: environment)
         case .media: MediaLibraryView(environment: environment)

@@ -366,7 +366,6 @@ actor ArchiveEngine {
         let jitter = Double.random(in: 0..<Double(interval) / 4.0)
         return interval + Int(jitter)
     }
-
     // MARK: - 后台与恢复
 
     /// 进入后台时保存任务状态

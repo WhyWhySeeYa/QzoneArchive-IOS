@@ -57,8 +57,8 @@ final class AppEnvironment: ObservableObject {
         let api = QzoneAPIClient(session: session, logger: logger)
         let database = ArchiveDatabase()
         let storage = FileStorageService()
-        let mediaManager = MediaDownloadManager(api: api, storage: storage, logger: logger)
-        let archiveEngine = ArchiveEngine(api: api, database: database, mediaManager: mediaManager, logger: logger)
+        let mediaManager = MediaDownloadManager(storage: storage, logger: logger)
+        let archiveEngine = ArchiveEngine(database: database, api: api, mediaManager: mediaManager, storage: storage, logger: logger)
         let exportService = ExportService(database: database, storage: storage)
         return AppEnvironment(
             settings: settings,

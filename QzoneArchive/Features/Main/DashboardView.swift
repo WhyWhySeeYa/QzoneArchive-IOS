@@ -8,7 +8,7 @@
 import SwiftUI
 
 struct DashboardView: View {
-    @EnvironmentObject var environment: AppEnvironment
+    @EnvironmentObject private var environment: AppEnvironment
     @StateObject private var viewModel: DashboardViewModel
 
     init(environment: AppEnvironment) {
