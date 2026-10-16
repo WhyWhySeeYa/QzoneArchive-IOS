@@ -97,22 +97,6 @@ final class AppEnvironment: ObservableObject {
         }
     }
 
-    /// 若存在未完成任务则恢复执行
-    func resumeInterruptedTaskIfNeeded(completion: @escaping (String?) -> Void) {
-        Task { [archiveEngine] in
-            let notice = await archiveEngine.resumeNoticeIfNeeded()
-            if notice != nil {
-                _ = try? await archiveEngine.startArchiveFromCheckpoint()
-            }
-            await MainActor.run { completion(notice) }
-        }
-    }
-
-    /// 进入后台时持久化任务进度
-    func persistRunningTaskForBackground() {
-        Task { await archiveEngine.checkpointForBackground() }
-    }
-
     /// 尝试继续上次未完成的任务
     func resumeInterruptedTaskIfNeeded(completion: @escaping (String?) -> Void) {
         Task.detached(priority: .utility) { [archiveEngine = self.archiveEngine, session = self.session] in

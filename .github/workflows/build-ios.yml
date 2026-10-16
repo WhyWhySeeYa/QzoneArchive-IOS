@@ -1,9 +1,8 @@
 name: Build iOS
 
+# 只手动触发：push 时自动跑会与 workflow_dispatch 重复
 on:
   workflow_dispatch:
-  push:
-    branches: [main, master]
   pull_request:
 
 jobs:

@@ -204,12 +204,6 @@ actor LoginSession {
         return LoginStatus(status: .success, message: "登录成功")
     }
 
-    /// 退出登录
-    func logout() async throws {
-        session = nil
-        try await credentials.clear()
-    }
-
     // MARK: - 内部实现
 
     private func fallbackCheckSigURL(text: String) -> String {
