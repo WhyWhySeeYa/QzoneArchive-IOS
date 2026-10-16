@@ -7,6 +7,11 @@
 
 import Foundation
 import SQLite3
+
+/// 绑定文本/二进制时必须让 SQLite 复制数据。
+/// 传 nil 等于 SQLITE_STATIC, SQLite 会持有 Swift 临时缓冲区的指针,
+/// 调用返回后该内存即失效, 读回时得到空串或乱码
+private let sqliteTransient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
 /// 数据库错误
 enum DatabaseError: Error {
     case openFailed(String)
@@ -19,9 +24,12 @@ final class ArchiveDatabase {
     private let storage: FileStorageService
     private let logger = AppLogger()
     private let queue = DispatchQueue(label: "com.minis.QzoneArchive.db")
+    private let queueKey = DispatchSpecificKey<UInt8>()
 
     init(storage: FileStorageService = FileStorageService()) {
         self.storage = storage
+        // 用于判定当前是否已在数据库队列上, 避免对同一串行队列重入 sync
+        queue.setSpecific(key: queueKey, value: 1)
     }
 
     deinit {
@@ -32,52 +40,62 @@ final class ArchiveDatabase {
 
     /// 打开数据库并建表
     func open() throws {
-        try queue.sync {
-            guard handle == nil else { return }
-            let url = storage.databaseURL
-            storage.ensureDirectory(storage.databaseDirectory)
-            var db: OpaquePointer?
-            if sqlite3_open(url.path, &db) != SQLITE_OK {
-                let message = db.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
-                sqlite3_close(db)
-                logger.error("打开数据库失败: \(message)")
-                throw DatabaseError.openFailed(message)
-            }
-            handle = db
-            sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nil, nil, nil)
-            sqlite3_exec(db, "PRAGMA synchronous=NORMAL;", nil, nil, nil)
-            sqlite3_exec(db, "PRAGMA foreign_keys=ON;", nil, nil, nil)
-            do {
-                try createSchema()
-            } catch {
-                logger.error("建表失败: \(error.localizedDescription)")
-                throw error
-            }
+        try syncOnQueue { try openIfNeeded() }
+    }
+
+    /// 实际打开逻辑, 调用方需保证已在数据库队列上下文中 (或正由 syncOnQueue 串行保护)
+    private func openIfNeeded() throws {
+        guard handle == nil else { return }
+        let url = storage.databaseURL
+        storage.ensureDirectory(storage.databaseDirectory)
+        var db: OpaquePointer?
+        if sqlite3_open(url.path, &db) != SQLITE_OK {
+            let message = db.map { String(cString: sqlite3_errmsg($0)) } ?? "unknown"
+            sqlite3_close(db)
+            logger.error("打开数据库失败: \(message)")
+            throw DatabaseError.openFailed(message)
+        }
+        handle = db
+        sqlite3_exec(db, "PRAGMA journal_mode=WAL;", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA synchronous=NORMAL;", nil, nil, nil)
+        sqlite3_exec(db, "PRAGMA foreign_keys=ON;", nil, nil, nil)
+        do {
+            try createSchema()
+        } catch {
+            logger.error("建表失败: \(error.localizedDescription)")
+            throw error
         }
     }
 
     /// 关闭数据库
     func close() {
-        queue.sync {
+        syncOnQueue {
             guard let db = handle else { return }
             sqlite3_close(db)
             handle = nil
         }
     }
 
-    /// 已打开的句柄, 不触发自动打开。
-    /// open() 自己会 queue.sync, 而 currentHandle 是在 queue.sync 闭包内读的,
-    /// 在这里再调 open() 就是对同一串行队列重入 sync —— libdispatch 会直接 abort
+    /// 当前是否已在数据库队列上。
+    /// 对同一串行队列重入 sync 会被 libdispatch 直接 abort, 队列内的再进入必须直接执行
+    private var isOnQueue: Bool {
+        DispatchQueue.getSpecific(key: queueKey) != nil
+    }
+
+    /// 串行执行: 已在队列上就直接执行, 否则 queue.sync
+    private func syncOnQueue<T>(_ block: () throws -> T) rethrows -> T {
+        if isOnQueue { return try block() }
+        return try queue.sync(execute: block)
+    }
+
+    /// 已打开的句柄, 不触发自动打开
     private var currentHandle: OpaquePointer? {
         handle
     }
 
-    /// 确保数据库已打开。必须在任何 queue.sync 之外调用 (见 currentHandle 注释)
+    /// 确保数据库已打开, 队列内外都可安全调用
     private func ensureOpen() throws {
-        let needsOpen = queue.sync { handle == nil }
-        if needsOpen {
-            try open()
-        }
+        try syncOnQueue { try openIfNeeded() }
     }
 
     // MARK: - Schema
@@ -261,7 +279,7 @@ final class ArchiveDatabase {
     @discardableResult
     func executeUpdate(_ sql: String, arguments: [Any?]) throws -> Int {
         try ensureOpen()
-        return try queue.sync {
+        return try syncOnQueue {
             guard let db = currentHandle else { throw DatabaseError.openFailed("数据库未打开") }
             var statement: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -280,7 +298,7 @@ final class ArchiveDatabase {
     /// 查询, 返回字典数组
     func executeQuery(_ sql: String, arguments: [Any?]) throws -> [[String: Any]] {
         try ensureOpen()
-        return try queue.sync {
+        return try syncOnQueue {
             guard let db = currentHandle else { throw DatabaseError.openFailed("数据库未打开") }
             var statement: OpaquePointer?
             guard sqlite3_prepare_v2(db, sql, -1, &statement, nil) == SQLITE_OK else {
@@ -323,7 +341,7 @@ final class ArchiveDatabase {
     @discardableResult
     func inTransaction<T>(_ block: () throws -> T) throws -> T {
         try ensureOpen()
-        return try queue.sync {
+        return try syncOnQueue {
             guard let db = currentHandle else { throw DatabaseError.openFailed("数据库未打开") }
             if sqlite3_exec(db, "BEGIN IMMEDIATE;", nil, nil, nil) != SQLITE_OK {
                 throw DatabaseError.execFailed(String(cString: sqlite3_errmsg(db)))
@@ -350,7 +368,7 @@ final class ArchiveDatabase {
             case nil:
                 sqlite3_bind_null(statement, position)
             case let value as String:
-                sqlite3_bind_text(statement, position, value, -1, nil)
+                sqlite3_bind_text(statement, position, value, -1, sqliteTransient)
             case let value as Int:
                 sqlite3_bind_int64(statement, position, Int64(value))
             case let value as Int64:
@@ -363,12 +381,12 @@ final class ArchiveDatabase {
                 sqlite3_bind_double(statement, position, value.timeIntervalSince1970)
             case let value as Data:
                 value.withUnsafeBytes { bytes in
-                    sqlite3_bind_blob(statement, position, bytes.baseAddress, Int32(value.count), nil)
+                    sqlite3_bind_blob(statement, position, bytes.baseAddress, Int32(value.count), sqliteTransient)
                 }
             case let value as UUID:
-                sqlite3_bind_text(statement, position, value.uuidString, -1, nil)
+                sqlite3_bind_text(statement, position, value.uuidString, -1, sqliteTransient)
             default:
-                sqlite3_bind_text(statement, position, String(describing: argument ?? ""), -1, nil)
+                sqlite3_bind_text(statement, position, String(describing: argument ?? ""), -1, sqliteTransient)
             }
         }
     }
@@ -387,6 +405,6 @@ extension ArchiveDatabase {
             try executeUpdate("DROP TABLE IF EXISTS \(table)", arguments: [])
         }
         // 表被删掉后要重新建。open() 见句柄非空会直接返回, 这里显式重跑建表
-        try queue.sync { try createSchema() }
+        try syncOnQueue { try createSchema() }
     }
 }

@@ -57,6 +57,7 @@ jobs:
             clean build 2>&1 | tee build.log
 
       - name: Unit tests (unsigned, simulator)
+        timeout-minutes: 25
         run: |
           set -o pipefail
           # Xcode 不接受 generic/platform=iOS Simulator 作为测试目标, 必须具体设备
@@ -74,7 +75,11 @@ jobs:
             DEVELOPMENT_TEAM="" \
             test 2>&1 | tee test.log || true
           echo "--- 测试摘要 ---"
-          grep -E "Test Suite '.*' (passed|failed)|Executed [0-9]+ test" test.log | tail -20 || true
+          grep -E "Executed [0-9]+ test" test.log | tail -10 || true
+          echo "--- 失败用例 ---"
+          grep -E "error: -\[" test.log | sed -E 's/.*error: //' | sort -u | head -40 || true
+          echo "--- 崩溃 ---"
+          grep -E "Crash:|Early unexpected exit" test.log | sort -u | head -10 || true
 
       # 真机包：模拟器包平台标记为 IOSSIMULATOR，装到设备上 dyld 会以
       # "wrong platform to load into process" 直接终止，必须单独出 iphoneos 包

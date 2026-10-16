@@ -46,6 +46,44 @@ final class FeedCursorTests: XCTestCase {
         XCTAssertTrue(advanced.hasPrefix("att="))
     }
 
+    /// 对应原项目 selftest 的 buildNestedCursor: 逐层编码拼出嵌套游标
+    private func buildNestedCursor(loadCountInAtt: Bool, loadCountInOuter: Bool) -> String {
+        let backend = FeedCursor.serializeQueryPairs([
+            QueryPair(key: "offset", value: "1168"),
+            QueryPair(key: "basetime", value: "1495974154"),
+        ])
+        var attachPairs = [QueryPair(key: "back_server_info", value: backend)]
+        if loadCountInAtt { attachPairs.append(QueryPair(key: "loadcount", value: "0")) }
+        var outerPairs = [QueryPair(key: "att", value: FeedCursor.serializeQueryPairs(attachPairs))]
+        outerPairs.append(QueryPair(key: "tl", value: "1495974154"))
+        if loadCountInOuter { outerPairs.append(QueryPair(key: "loadcount", value: "0")) }
+        return FeedCursor.serializeQueryPairs(outerPairs)
+    }
+
+    func testAdvanceKeepsLoadCountInsideAtt() throws {
+        let cursor = buildNestedCursor(loadCountInAtt: true, loadCountInOuter: false)
+        let advanced = try FeedCursor.advance(cursor, offsetAdvance: 1)
+        let details = try FeedCursor.parse(advanced)
+        XCTAssertEqual(details.offset, 1169)
+        XCTAssertEqual(details.loadCount, 1)
+        XCTAssertNil(FeedCursor.parseQueryPairs(advanced)?[key: "loadcount"])
+    }
+
+    func testMissingLoadCountDefaultsToZeroAndGoesIntoAtt() throws {
+        let cursor = buildNestedCursor(loadCountInAtt: false, loadCountInOuter: false)
+        XCTAssertEqual(try FeedCursor.parse(cursor).loadCount, 0)
+        let advanced = try FeedCursor.advance(cursor, offsetAdvance: 1)
+        XCTAssertEqual(try FeedCursor.parse(advanced).loadCount, 1)
+        XCTAssertNil(FeedCursor.parseQueryPairs(advanced)?[key: "loadcount"])
+    }
+
+    func testAdvanceRealCursorByTwo() throws {
+        let details = try FeedCursor.parse(try FeedCursor.advance(realCursor, offsetAdvance: 2))
+        XCTAssertEqual(details.offset, 1170)
+        XCTAssertEqual(details.baseTime, 1_495_974_154)
+        XCTAssertEqual(details.loadCount, 78)
+    }
+
     func testParseReadsThreeLayers() throws {
         let details = try FeedCursor.parse(makeCursor(offset: 120, baseTime: 1_700_000_000, loadCount: 3))
         XCTAssertEqual(details.offset, 120)
