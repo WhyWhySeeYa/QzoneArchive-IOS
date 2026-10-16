@@ -63,8 +63,8 @@ actor LoginSession {
     }
 
     /// 当前账号
-    func currentAccount() -> Account? {
-        get async { await credentials.loadAccount() }
+    func currentAccount() async -> Account? {
+        await credentials.loadAccount()
     }
 
     /// 保存账号
@@ -141,13 +141,13 @@ actor LoginSession {
 
     /// 轮询扫码状态
     func pollQRLogin() async throws -> LoginStatus {
-        guard let current = session else { throw QzoneError.loginFailed("请先获取登录二维码") }
+        guard let stored = session else { throw QzoneError.loginFailed("请先获取登录二维码") }
         let (text, setCookie) = try await requestText(
-            ptqrloginQuery(current),
-            headers: ["User-Agent": current.userAgent, "Cookie": QzoneLoginPrimitives.cookieHeader(current.cookies)],
+            ptqrloginQuery(stored),
+            headers: ["User-Agent": stored.userAgent, "Cookie": QzoneLoginPrimitives.cookieHeader(stored.cookies)],
             failurePrefix: "检查扫码状态失败："
         )
-        var current = current
+        var current = stored
         mergeCookies(setCookie, into: &current.cookies)
 
         if text.contains("'66'") || text.contains("二维码未失效") {
