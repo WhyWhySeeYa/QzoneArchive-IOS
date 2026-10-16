@@ -91,6 +91,25 @@ final class QzoneLoginPrimitivesTests: XCTestCase {
         XCTAssertLessThan(millis, 3_000_000_000_000)
     }
 
+    /// 真实 ptqrlogin 回调: 成功时第 3 个单引号参数才是跳转地址
+    /// (线上抓包: ptuiCB('66','0','','0','二维码未失效。', ''))
+    func testPollLoginURLMatchesDesktopCallbackLayout() {
+        let waiting = "ptuiCB('66','0','','0','二维码未失效。', '')"
+        XCTAssertNil(QzoneLoginPrimitives.pollLoginURL(waiting))
+
+        let success = """
+        ptuiCB('0','0','https://ptlogin2.qzone.qq.com/check_sig?pttype=1&uin=1234567890&service=ptqrlogin&nodirect=0&ptsigx=abcDEF123&s_url=https%3A%2F%2Fh5.qzone.qq.com%2Fmqzone%2Findex&f_url=&ptlang=2052&ptredirect=100&aid=549000929&daid=5&j_later=0','0','登录成功！','测试昵称');
+        """
+        XCTAssertEqual(
+            QzoneLoginPrimitives.pollLoginURL(success),
+            "https://ptlogin2.qzone.qq.com/check_sig?pttype=1&uin=1234567890&service=ptqrlogin&nodirect=0&ptsigx=abcDEF123&s_url=https%3A%2F%2Fh5.qzone.qq.com%2Fmqzone%2Findex&f_url=&ptlang=2052&ptredirect=100&aid=549000929&daid=5&j_later=0"
+        )
+
+        // 回调里的 uin / ptsigx 仍可被取出来
+        XCTAssertEqual(QzoneLoginPrimitives.callbackQueryValue(success, name: "uin"), "1234567890")
+        XCTAssertEqual(QzoneLoginPrimitives.callbackQueryValue(success, name: "ptsigx"), "abcDEF123")
+    }
+
     func testQzoneErrorRedactionRemovesCredentials() {
         let text = "Cookie: skey=@abc123; p_skey=SECRETVALUE"
         let redacted = QzoneError.redact(text)

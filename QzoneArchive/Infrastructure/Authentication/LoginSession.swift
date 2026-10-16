@@ -120,23 +120,29 @@ actor LoginSession {
         let userAgent = QzoneLoginPrimitives.selectMobileUserAgent(previous: lastUserAgent)
         lastUserAgent = userAgent
 
-        let (_, sigCookies) = try await requestText(
+        let (_, xloginStatus, sigCookies) = try await requestText(
             xloginQuery(),
             headers: ["User-Agent": userAgent],
             failurePrefix: "xlogin 请求失败: "
         )
+        guard (200..<300).contains(xloginStatus) else {
+            throw QzoneError.loginFailed("xlogin 返回 HTTP \(xloginStatus)")
+        }
         guard let loginSig = sigCookies["pt_login_sig"] else {
             throw QzoneError.loginFailed("xlogin 响应中缺少 pt_login_sig cookie")
         }
         var cookies = sigCookies
         cookies.removeValue(forKey: "pt_login_sig")
 
-        let (qrData, qrCookies) = try await requestBytes(
+        let (qrData, qrStatus, qrCookies) = try await requestBytes(
             ptqrshowQuery(),
             headers: ["User-Agent": userAgent, "Cookie": QzoneLoginPrimitives.cookieHeader(cookies)],
             failurePrefix: "获取登录二维码失败："
         )
-        guard let qrsig = qrCookies["qrsig"] else {
+        guard (200..<300).contains(qrStatus) else {
+            throw QzoneError.loginFailed("获取登录二维码失败：HTTP \(qrStatus)")
+        }
+        guard let qrsig = qrCookies["qrsig"], !qrsig.isEmpty else {
             throw QzoneError.loginFailed("二维码响应中缺少 qrsig")
         }
         mergeCookies(qrCookies, into: &cookies)
@@ -155,7 +161,7 @@ actor LoginSession {
     /// 轮询扫码状态
     func pollQRLogin() async throws -> LoginStatus {
         guard let stored = session else { throw QzoneError.loginFailed("请先获取登录二维码") }
-        let (text, setCookie) = try await requestText(
+        let (text, _, setCookie) = try await requestText(
             ptqrloginQuery(stored),
             headers: ["User-Agent": stored.userAgent, "Cookie": QzoneLoginPrimitives.cookieHeader(stored.cookies)],
             failurePrefix: "检查扫码状态失败："
@@ -183,15 +189,11 @@ actor LoginSession {
         guard let callbackUin = QzoneLoginPrimitives.callbackQueryValue(text, name: "uin") else {
             throw QzoneError.loginFailed("登录成功响应中缺少 uin")
         }
-        guard let callbackURLString = QzoneLoginPrimitives.pollLoginURL(text) ?? fallbackCheckSigURL(text: text),
-              let loginURL = URL(string: callbackURLString),
-              let scheme = loginURL.scheme?.lowercased(),
-              scheme == "http" || scheme == "https"
-        else {
-            // 没有合法 scheme 的地址交给 URLSession 只会抛 unsupported URL, 这里直接给可读提示
-            throw QzoneError.loginFailed("扫码回调地址无效，请刷新二维码重试")
+        let loginURLString = QzoneLoginPrimitives.pollLoginURL(text) ?? fallbackCheckSigURL(text: text)
+        guard let loginURL = URL(string: loginURLString) else {
+            throw QzoneError.loginFailed("确认 QQ 登录失败：登录地址无法解析：\(loginURLString)")
         }
-        let (_, confirmCookies) = try await requestText(
+        let (_, _, confirmCookies) = try await requestText(
             loginURL,
             headers: ["User-Agent": current.userAgent, "Cookie": QzoneLoginPrimitives.cookieHeader(current.cookies)],
             failurePrefix: "确认 QQ 登录失败："
@@ -199,7 +201,12 @@ actor LoginSession {
         mergeCookies(confirmCookies, into: &current.cookies)
 
         guard let pSkey = current.cookies["p_skey"], !pSkey.trimmingCharacters(in: .whitespaces).isEmpty else {
-            throw QzoneError.loginFailed("登录 Cookie 中缺少有效的 p_skey")
+            let available = current.cookies
+                .filter { !$0.value.trimmingCharacters(in: .whitespaces).isEmpty }
+                .map(\.key)
+                .sorted()
+                .joined(separator: ", ")
+            throw QzoneError.loginFailed("登录 Cookie 中缺少有效的 p_skey（当前 Cookie：\(available)）")
         }
         let uin = QzoneLoginPrimitives.normalizedUin(callbackUin)
         let userAgent = QzoneLoginPrimitives.accountUserAgent(uin: uin)
@@ -226,32 +233,24 @@ actor LoginSession {
 
     // MARK: - 内部实现
 
-    /// 回调里没有可用跳转地址时, 用 check_sig 兜底 (需要 uin 与 ptsigx)
-    private func fallbackCheckSigURL(text: String) -> String? {
+    /// 回调里没有跳转地址时用 check_sig 兜底, 对应参考实现 fallbackCheckSigUrl
+    private func fallbackCheckSigURL(text: String) -> String {
         let ptsigx = QzoneLoginPrimitives.callbackQueryValue(text, name: "ptsigx") ?? ""
         let uin = QzoneLoginPrimitives.callbackQueryValue(text, name: "uin") ?? ""
-        guard !ptsigx.isEmpty, !uin.isEmpty else { return nil }
-
-        var components = URLComponents(string: checkSigURL)
-        components?.queryItems = [
-            URLQueryItem(name: "pttype", value: "1"),
-            URLQueryItem(name: "uin", value: uin),
-            URLQueryItem(name: "service", value: "ptqrlogin"),
-            URLQueryItem(name: "nodirect", value: "0"),
-            URLQueryItem(name: "ptsigx", value: ptsigx),
-            URLQueryItem(name: "s_url", value: sURL),
-            URLQueryItem(name: "f_url", value: ""),
-            URLQueryItem(name: "ptlang", value: "2052"),
-            URLQueryItem(name: "ptredirect", value: "100"),
-            URLQueryItem(name: "aid", value: QzoneLoginPrimitives.appID),
-            URLQueryItem(name: "daid", value: QzoneLoginPrimitives.daID),
-        ]
-        return components?.url?.absoluteString
+        return "\(checkSigURL)?pttype=1&uin=\(uin)&service=ptqrlogin&nodirect=0&ptsigx=\(ptsigx)&s_url=\(sURL)&f_url=&ptlang=2052&ptredirect=100&aid=\(QzoneLoginPrimitives.appID)&daid=\(QzoneLoginPrimitives.daID)"
     }
 
     private func xloginQuery() throws -> URL {
         var components = URLComponents(string: xloginURL)!
         components.queryItems = [
+            URLQueryItem(name: "hide_title_bar", value: "1"),
+            URLQueryItem(name: "style", value: "22"),
+            URLQueryItem(name: "daid", value: QzoneLoginPrimitives.daID),
+            URLQueryItem(name: "low_login", value: "0"),
+            URLQueryItem(name: "qlogin_auto_login", value: "1"),
+            URLQueryItem(name: "no_verifyimg", value: "1"),
+            URLQueryItem(name: "link_target", value: "blank"),
+            URLQueryItem(name: "appid", value: QzoneLoginPrimitives.appID),
             URLQueryItem(name: "target", value: "self"),
             URLQueryItem(name: "s_url", value: sURL),
             URLQueryItem(name: "proxy_url", value: ""),
@@ -301,80 +300,49 @@ actor LoginSession {
         return components.url!
     }
 
-    /// 文本请求, 返回正文与本次请求收集到的 Cookie
+    /// 文本请求。对应参考实现 requestTextOrFail: 只把网络错误包上业务前缀,
+    /// HTTP 状态码由调用方按需检查
     private func requestText(
         _ url: URL,
         headers: [String: String],
         failurePrefix: String
-    ) async throws -> (String, [String: String]) {
-        let (data, http, cookies) = try await performRequest(url, headers: headers)
-        guard (200..<400).contains(http.statusCode) else {
-            throw QzoneError.loginFailed("\(failurePrefix)HTTP \(http.statusCode)")
+    ) async throws -> (String, Int, [String: String]) {
+        do {
+            let (data, http, cookies) = try await performRequest(url, headers: headers)
+            return (Self.decodeText(data), http.statusCode, cookies)
+        } catch {
+            throw QzoneError.loginFailed("\(failurePrefix)\(error.localizedDescription)")
         }
-        return (Self.decodeText(data), cookies)
     }
 
-    /// 二进制请求, 返回数据与本次请求收集到的 Cookie
+    /// 二进制请求, 同 requestText
     private func requestBytes(
         _ url: URL,
         headers: [String: String],
         failurePrefix: String
-    ) async throws -> (Data, [String: String]) {
-        let (data, http, cookies) = try await performRequest(url, headers: headers)
-        guard (200..<400).contains(http.statusCode) else {
-            throw QzoneError.loginFailed("\(failurePrefix)HTTP \(http.statusCode)")
+    ) async throws -> (Data, Int, [String: String]) {
+        do {
+            let (data, http, cookies) = try await performRequest(url, headers: headers)
+            return (data, http.statusCode, cookies)
+        } catch {
+            throw QzoneError.loginFailed("\(failurePrefix)\(error.localizedDescription)")
         }
-        return (data, cookies)
     }
 
-    /// 手动逐跳跟随重定向, 收集每一跳的 Set-Cookie
+    /// 单次请求, 不跟随重定向 —— 对应参考实现的 fetch(..., { redirect: "manual" })。
+    /// check_sig 的关键 Cookie 就在 302 响应头里, 跟随重定向反而会丢
     private func performRequest(
         _ url: URL,
         headers: [String: String]
     ) async throws -> (Data, HTTPURLResponse, [String: String]) {
-        var currentURL = url
-        var collected: [String: String] = [:]
-        var lastData = Data()
-        var lastResponse: HTTPURLResponse?
-
-        // 调用方显式传入的 Cookie 作为基线
-        var baseCookies: [String: String] = [:]
-        if let raw = headers["Cookie"] {
-            for pair in raw.split(separator: ";") {
-                let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-                if kv.count == 2 {
-                    baseCookies[kv[0].trimmingCharacters(in: .whitespaces)] = kv[1].trimmingCharacters(in: .whitespaces)
-                }
-            }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        for (key, value) in headers {
+            request.setValue(value, forHTTPHeaderField: key)
         }
-
-        for _ in 0..<6 {
-            var request = URLRequest(url: currentURL)
-            request.httpMethod = "GET"
-            for (key, value) in headers where key.lowercased() != "cookie" {
-                request.setValue(value, forHTTPHeaderField: key)
-            }
-            var merged = baseCookies
-            for (name, value) in collected { merged[name] = value }
-            if !merged.isEmpty {
-                request.setValue(QzoneLoginPrimitives.cookieHeader(merged), forHTTPHeaderField: "Cookie")
-            }
-
-            let (data, response) = try await urlSession.data(for: request)
-            guard let http = response as? HTTPURLResponse else { throw QzoneError.invalidResponse }
-            lastData = data
-            lastResponse = http
-            mergeCookies(Self.parseSetCookie(http), into: &collected)
-
-            guard (300..<400).contains(http.statusCode),
-                  let location = http.value(forHTTPHeaderField: "Location"),
-                  let next = URL(string: location, relativeTo: currentURL)?.absoluteURL
-            else { break }
-            currentURL = next
-        }
-
-        guard let http = lastResponse else { throw QzoneError.invalidResponse }
-        return (lastData, http, collected)
+        let (data, response) = try await urlSession.data(for: request)
+        guard let http = response as? HTTPURLResponse else { throw QzoneError.invalidResponse }
+        return (data, http, Self.parseSetCookie(http))
     }
 
     /// 解析响应头中的 Set-Cookie, 不依赖 URLSession 的 cookie storage
@@ -439,8 +407,9 @@ actor LoginSession {
     /// 合并 Cookie, 空值不覆盖已有有效值
     private func mergeCookies(_ setCookie: [String: String], into cookies: inout [String: String]) {
         for (name, value) in setCookie {
-            if !value.trimmingCharacters(in: .whitespaces).isEmpty {
-                cookies[name] = value
+            let trimmed = value.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty {
+                cookies[name] = trimmed
             }
         }
     }

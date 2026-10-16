@@ -57,16 +57,32 @@ enum QzoneLoginPrimitives {
         return String(text[valueRange])
     }
 
-    /// 取第 3 个单引号参数, 仅当首参为 0 时视为登录跳转地址
     /// 从 ptuiCB 回调里取跳转地址
-    /// 格式: ptuiCB('状态码','子状态码','跳转URL','提示类型','提示文案','昵称')
-    /// 按单引号切分后, 下标 1=状态码, 3=子状态码, 5=跳转URL
+    /// 对应参考实现 pollLoginUrl: 取出所有单引号包裹的片段,
+    /// 第 1 个是状态码, 第 3 个是跳转地址 (如 ptuiCB('0','0','<url>','0','登录成功',''))
     static func pollLoginURL(_ text: String) -> String? {
-        let parts = text.components(separatedBy: "'")
-        guard parts.count >= 6, parts[1] == "0" else { return nil }
-        let candidate = parts[5].trimmingCharacters(in: .whitespacesAndNewlines)
-        guard candidate.hasPrefix("http://") || candidate.hasPrefix("https://") else { return nil }
-        return candidate
+        let values = quotedValues(text)
+        guard values.count >= 3, values[0] == "0" else { return nil }
+        return values[2]
+    }
+
+    /// 取出所有单引号包裹的片段, 对应参考实现的正则 /'([^']*)'/g
+    static func quotedValues(_ text: String) -> [String] {
+        var values: [String] = []
+        var current: String?
+        for character in text {
+            if character == "'" {
+                if let value = current {
+                    values.append(value)
+                    current = nil
+                } else {
+                    current = ""
+                }
+            } else if current != nil {
+                current?.append(character)
+            }
+        }
+        return values
     }
 
     /// 去掉 uin 前缀的 o 与前导 0
@@ -77,24 +93,78 @@ enum QzoneLoginPrimitives {
         return result
     }
 
-    /// 随机十六进制串
-    static func randomHex(length: Int) -> String {
-        var result = ""
-        result.reserveCapacity(length)
-        while result.count < length {
-            let chunk = String(format: "%08x", UInt32.random(in: 0..<UInt32.max))
-            result += chunk
-        }
-        return String(result.prefix(length))
+    // MARK: - 随机值 (与桌面端 loginPrimitives.ts 的 128 位 LCG 逐位对齐)
+
+    private static let hexChars = Array("0123456789abcdef")
+    private static let alphanumChars = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+    private static let randomMultiplier: UInt64 = 6364136223846793005
+    private static let randomIncrement: UInt64 = 1442695040888963407
+    private static let randomSeedMultiplier: UInt64 = 0x9e37_79b9
+    private static let userAgentSeedMultiplier: UInt64 = 0x9e37_79b1
+
+    /// 与桌面端 USER_AGENT_SEQUENCE 对应: UA 选择会自增该序号, 随机值只读取当前值作种子
+    private static let sequenceLock = NSLock()
+    private static var userAgentSequence: UInt64 = 0
+
+    /// 128 位 LCG 状态, 拆成高低两个 64 位部分 (Swift 无 UInt128)
+    private struct RandomState {
+        var high: UInt64
+        var low: UInt64
     }
 
-    /// 随机大小写字母加数字混合串
-    static func randomAlphanumeric(length: Int) -> String {
-        let chars = Array("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")
+    private static func currentSequence() -> UInt64 {
+        sequenceLock.lock()
+        defer { sequenceLock.unlock() }
+        return userAgentSequence
+    }
+
+    private static func advanceSequence() -> UInt64 {
+        sequenceLock.lock()
+        defer { sequenceLock.unlock() }
+        let sequence = userAgentSequence
+        userAgentSequence &+= 1
+        return sequence
+    }
+
+    /// state = (state * 乘数 + 增量) mod 2^128
+    private static func nextRandomState(_ state: RandomState) -> RandomState {
+        let product = state.low.multipliedFullWidth(by: randomMultiplier)
+        let high = product.high &+ (state.high &* randomMultiplier)
+        let (low, overflow) = product.low.addingReportingOverflow(randomIncrement)
+        return RandomState(high: overflow ? high &+ 1 : high, low: low)
+    }
+
+    /// state = ((毫秒时间戳 ^ 序号) * 乘数) mod 2^128
+    private static func initialRandomState(multiplier: UInt64) -> RandomState {
+        let seed = UInt64(unixMillis()) ^ currentSequence()
+        let product = seed.multipliedFullWidth(by: multiplier)
+        return RandomState(high: product.high, low: product.low)
+    }
+
+    /// 随机十六进制串: 每次取 (state >> 32) 的低 4 位
+    static func randomHex(length: Int) -> String {
+        var state = initialRandomState(multiplier: randomSeedMultiplier)
         var result = ""
         result.reserveCapacity(length)
-        while result.count < length {
-            result.append(chars[Int.random(in: 0..<chars.count)])
+        for _ in 0..<length {
+            state = nextRandomState(state)
+            result.append(hexChars[Int((state.low >> 32) & 0xf)])
+        }
+        return result
+    }
+
+    /// 随机大小写字母加数字混合串: 每次取 (state >> 32) mod 62
+    static func randomAlphanumeric(length: Int) -> String {
+        var state = initialRandomState(multiplier: randomSeedMultiplier)
+        var result = ""
+        result.reserveCapacity(length)
+        for _ in 0..<length {
+            state = nextRandomState(state)
+            // (state >> 32) mod len: 高位部分按 2^32 mod len 折回来
+            let modulus = UInt64(alphanumChars.count)
+            let lowPart = (state.low >> 32) % modulus
+            let highPart = ((state.high % modulus) * ((1 << 32) % modulus)) % modulus
+            result.append(alphanumChars[Int((lowPart + highPart) % modulus)])
         }
         return result
     }
@@ -136,12 +206,15 @@ enum QzoneLoginPrimitives {
         return result
     }
 
-    /// 随机选择 UA, 避免与上一次重复
+    /// 选择移动端 UA: 序号自增, 种子由毫秒时间戳与序号混合, 且不与上一次重复
     static func selectMobileUserAgent(previous: String?) -> String {
-        let selected = mobileUserAgents.randomElement() ?? mobileUserAgents[0]
-        if selected == previous, let alternative = mobileUserAgents.first(where: { $0 != previous }) {
-            return alternative
+        let sequence = advanceSequence()
+        // 桌面端对 64 位取模, Swift 的 &* 本身就会回绕
+        let seed = UInt64(unixMillis()) ^ (sequence &* userAgentSeedMultiplier)
+        var index = Int(seed % UInt64(mobileUserAgents.count))
+        if let previous, previous == mobileUserAgents[index] {
+            index = (index + 1) % mobileUserAgents.count
         }
-        return selected
+        return mobileUserAgents[index]
     }
 }
