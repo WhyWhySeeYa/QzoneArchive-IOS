@@ -72,7 +72,7 @@ struct ArchiveListView: View {
         } message: {
             Text(viewModel.notice ?? "")
         }
-        .onChange(of: viewModel.selectedCategory) { _, _ in viewModel.load() }
+        .onChange(of: viewModel.selectedCategory) { _ in viewModel.load() }
     }
 
     private var categoryPicker: some View {

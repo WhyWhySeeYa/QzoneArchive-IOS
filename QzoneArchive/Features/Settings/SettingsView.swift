@@ -26,7 +26,7 @@ struct SettingsView: View {
         }
         .navigationTitle("设置")
         .onAppear { settings = environment.settings.archiveSettings }
-        .onChange(of: settings) { _, _ in
+        .onChange(of: settings) { _ in
             environment.settings.archiveSettings = settings
         }
         .alert("提示", isPresented: Binding(

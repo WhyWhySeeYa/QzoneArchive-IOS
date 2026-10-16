@@ -85,7 +85,7 @@ final class ArchiveListViewModel: ObservableObject {
         guard let account = environment.sessionAccount else { return }
         isLoading = true
         Task {
-            let result = await Task.detached(priority: .userInitiated) {
+            let result: ([ArchivePost], Int) = await Task.detached(priority: .userInitiated) {
                 let repo = SQLiteArchiveRepository(database: self.environment.database)
                 let keyword = self.keyword
                 if keyword.trimmingCharacters(in: .whitespaces).isEmpty {

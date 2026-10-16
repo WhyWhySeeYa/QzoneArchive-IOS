@@ -35,7 +35,7 @@ struct QzoneArchiveApp: App {
                 }
             }
             .preferredColorScheme(appState.preferredColorScheme)
-            .onChange(of: scenePhase) { _, phase in
+            .onChange(of: scenePhase) { phase in
                 switch phase {
                 case .active:
                     appState.handleAppBecameActive()
