@@ -19,11 +19,13 @@ jobs:
           xcodegen --version
           xcodegen generate
           # Homebrew 最新版会生成 format 77，Xcode 15.4 读不了，强制降回 51
-          if grep -q 'objectVersion = 77' QzoneArchive.xcodeproj/project.pbxproj; then
-            sed -i '' 's/objectVersion = 77;/objectVersion = 51;/' QzoneArchive.xcodeproj/project.pbxproj
-            sed -i '' 's/compatibilityVersion = "Xcode 15.0";/compatibilityVersion = "Xcode 14.0";/g' QzoneArchive.xcodeproj/project.pbxproj
+          PBX=QzoneArchive.xcodeproj/project.pbxproj
+          if grep -q 'objectVersion = 77;' "$PBX"; then
+            sed -i '' 's/objectVersion = 77;/objectVersion = 51;/' "$PBX"
+            sed -i '' 's/compatibilityVersion = "Xcode 15.0";/compatibilityVersion = "Xcode 14.0";/g' "$PBX"
           fi
-          grep -m1 objectVersion QzoneArchive.xcodeproj/project.pbxproj          test -f QzoneArchive.xcodeproj/project.pbxproj
+          test -f "$PBX"
+          grep -m1 objectVersion "$PBX"
 
       - name: Build (unsigned, simulator)
         run: |
