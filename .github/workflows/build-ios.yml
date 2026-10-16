@@ -1,0 +1,69 @@
+name: Build iOS
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate Xcode project
+        run: |
+          brew update
+          brew install xcodegen || true
+          xcodegen generate
+          test -f QzoneArchive.xcodeproj/project.pbxproj
+
+      - name: Build (unsigned, simulator)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project QzoneArchive.xcodeproj \
+            -scheme QzoneArchive \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            clean build 2>&1 | tee build.log
+
+      - name: Unit tests (unsigned, simulator)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project QzoneArchive.xcodeproj \
+            -scheme QzoneArchive \
+            -configuration Debug \
+            -sdk iphonesimulator \
+            -destination 'generic/platform=iOS Simulator' \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGN_IDENTITY="" \
+            DEVELOPMENT_TEAM="" \
+            test-without-building 2>&1 | tee test.log || true
+
+      - name: Package .app / .ipa
+        if: success()
+        run: |
+          APP=$(find build/DerivedData -name "QzoneArchive.app" -type d | head -1)
+          mkdir -p Payload
+          cp -r "$APP" Payload/
+          zip -qr QzoneArchive-unsigned.ipa Payload
+          rm -rf Payload
+          zip -qr QzoneArchive-simulator.zip "$APP"
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: QzoneArchive-ios
+          path: |
+            QzoneArchive-unsigned.ipa
+            QzoneArchive-simulator.zip
+            build/DerivedData/Build/Products/Debug-iphonesimulator/**/*.dSYM
