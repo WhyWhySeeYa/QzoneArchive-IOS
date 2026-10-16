@@ -22,6 +22,20 @@ struct LoginStatus: Equatable {
     var message: String
 }
 
+/// 关闭 URLSession 自动重定向: 由请求层逐跳手动跟随, 以便收集每一跳的 Set-Cookie
+/// (登录链路中 302 那一跳会下发 pt_login_sig 等关键 cookie, 交给系统跟随会丢)
+private final class RedirectBlocker: NSObject, URLSessionTaskDelegate {
+    func urlSession(
+        _ session: URLSession,
+        task: URLSessionTask,
+        willPerformHTTPRedirection response: HTTPURLResponse,
+        newRequest request: URLRequest,
+        completionHandler: @escaping (URLRequest?) -> Void
+    ) {
+        completionHandler(nil)
+    }
+}
+
 /// 登录会话状态机, 对应桌面端 core/login.ts
 actor LoginSession {
     /// 登录接口地址
@@ -39,19 +53,19 @@ actor LoginSession {
     private let credentials: CredentialStore
     private let logger: AppLogger
     private let urlSession: URLSession
-    /// 登录接口专用 cookie storage, 收集 Set-Cookie 供手工读取
-    private let loginCookieStorage = HTTPCookieStorage()
+    /// 关闭自动重定向, 便于逐跳收集 Set-Cookie
+    private let redirectBlocker = RedirectBlocker()
 
     init(credentials: CredentialStore, logger: AppLogger) {
         self.credentials = credentials
         self.logger = logger
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForRequest = 30
-        config.httpShouldSetCookies = true
-        config.httpCookieAcceptPolicy = .always
-        config.httpCookieStorage = loginCookieStorage
+        // 不用 URLSession 的 cookie 引擎: 自行解析 Set-Cookie, 与桌面端实现一致
+        config.httpShouldSetCookies = false
+        config.httpCookieStorage = nil
         config.httpMaximumConnectionsPerHost = 1
-        urlSession = URLSession(configuration: config)
+        urlSession = URLSession(configuration: config, delegate: redirectBlocker, delegateQueue: nil)
     }
 
     // MARK: - 会话状态
@@ -269,9 +283,11 @@ actor LoginSession {
         headers: [String: String],
         failurePrefix: String
     ) async throws -> (String, [String: String]) {
-        let (data, response) = try await performRequest(url, headers: headers)
-        guard let http = response as? HTTPURLResponse else { throw QzoneError.invalidResponse }
-        return (Self.decodeText(data), cookiesForRequest(url: url))
+        let (data, http, cookies) = try await performRequest(url, headers: headers)
+        guard (200..<400).contains(http.statusCode) else {
+            throw QzoneError.loginFailed("\(failurePrefix)HTTP \(http.statusCode)")
+        }
+        return (Self.decodeText(data), cookies)
     }
 
     /// 二进制请求, 返回数据与本次请求收集到的 Cookie
@@ -280,29 +296,120 @@ actor LoginSession {
         headers: [String: String],
         failurePrefix: String
     ) async throws -> (Data, [String: String]) {
-        let (data, response) = try await performRequest(url, headers: headers)
-        guard let http = response as? HTTPURLResponse else { throw QzoneError.invalidResponse }
-        return (data, cookiesForRequest(url: url))
+        let (data, http, cookies) = try await performRequest(url, headers: headers)
+        guard (200..<400).contains(http.statusCode) else {
+            throw QzoneError.loginFailed("\(failurePrefix)HTTP \(http.statusCode)")
+        }
+        return (data, cookies)
     }
 
-    private func performRequest(_ url: URL, headers: [String: String]) async throws -> (Data, URLResponse) {
-        var request = URLRequest(url: url)
-        request.httpMethod = "GET"
-        for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
-        do {
-            return try await urlSession.data(for: request)
-        } catch {
-            throw QzoneError.networkUnavailable
+    /// 手动逐跳跟随重定向, 收集每一跳的 Set-Cookie
+    private func performRequest(
+        _ url: URL,
+        headers: [String: String]
+    ) async throws -> (Data, HTTPURLResponse, [String: String]) {
+        var currentURL = url
+        var collected: [String: String] = [:]
+        var lastData = Data()
+        var lastResponse: HTTPURLResponse?
+
+        // 调用方显式传入的 Cookie 作为基线
+        var baseCookies: [String: String] = [:]
+        if let raw = headers["Cookie"] {
+            for pair in raw.split(separator: ";") {
+                let kv = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                if kv.count == 2 {
+                    baseCookies[kv[0].trimmingCharacters(in: .whitespaces)] = kv[1].trimmingCharacters(in: .whitespaces)
+                }
+            }
         }
+
+        for _ in 0..<6 {
+            var request = URLRequest(url: currentURL)
+            request.httpMethod = "GET"
+            for (key, value) in headers where key.lowercased() != "cookie" {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
+            var merged = baseCookies
+            for (name, value) in collected { merged[name] = value }
+            if !merged.isEmpty {
+                request.setValue(QzoneLoginPrimitives.cookieHeader(merged), forHTTPHeaderField: "Cookie")
+            }
+
+            let (data, response) = try await urlSession.data(for: request)
+            guard let http = response as? HTTPURLResponse else { throw QzoneError.invalidResponse }
+            lastData = data
+            lastResponse = http
+            mergeCookies(Self.parseSetCookie(http), into: &collected)
+
+            guard (300..<400).contains(http.statusCode),
+                  let location = http.value(forHTTPHeaderField: "Location"),
+                  let next = URL(string: location, relativeTo: currentURL)?.absoluteURL
+            else { break }
+            currentURL = next
+        }
+
+        guard let http = lastResponse else { throw QzoneError.invalidResponse }
+        return (lastData, http, collected)
     }
 
-    /// 从 cookie storage 中读取该域下的 Cookie
-    private func cookiesForRequest(url: URL) -> [String: String] {
-        var result: [String: String] = [:]
-        for cookie in loginCookieStorage.cookies(for: url) ?? [] {
-            result[cookie.name] = cookie.value
+    /// 解析响应头中的 Set-Cookie, 不依赖 URLSession 的 cookie storage
+    static func parseSetCookie(_ response: HTTPURLResponse) -> [String: String] {
+        var rawValues: [String] = []
+        for (key, value) in response.allHeaderFields {
+            guard let field = key as? String, field.lowercased() == "set-cookie" else { continue }
+            if let list = value as? [String] {
+                rawValues.append(contentsOf: list)
+            } else if let text = value as? String {
+                rawValues.append(text)
+            }
         }
-        return result
+
+        var cookies: [String: String] = [:]
+        for raw in rawValues {
+            for piece in splitMergedSetCookie(raw) {
+                guard let first = piece.split(separator: ";").first else { continue }
+                let pair = first.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard pair.count == 2 else { continue }
+                let name = pair[0].trimmingCharacters(in: .whitespaces)
+                let value = pair[1].trimmingCharacters(in: .whitespaces)
+                guard !name.isEmpty else { continue }
+                cookies[name] = value
+            }
+        }
+        return cookies
+    }
+
+    /// CFNetwork 会把多个 Set-Cookie 合并成一个逗号分隔串,
+    /// 而 Expires 属性里本身含逗号, 因此只在「逗号 + cookie 名=」处切分
+    static func splitMergedSetCookie(_ raw: String) -> [String] {
+        var pieces: [String] = []
+        var current = ""
+        let characters = Array(raw)
+        var index = 0
+        while index < characters.count {
+            let character = characters[index]
+            if character == "," {
+                var probe = index + 1
+                while probe < characters.count, characters[probe] == " " { probe += 1 }
+                var nameEnd = probe
+                while nameEnd < characters.count, isCookieNameChar(characters[nameEnd]) { nameEnd += 1 }
+                if nameEnd > probe, nameEnd < characters.count, characters[nameEnd] == "=" {
+                    pieces.append(current)
+                    current = ""
+                    index = probe
+                    continue
+                }
+            }
+            current.append(character)
+            index += 1
+        }
+        if !current.isEmpty { pieces.append(current) }
+        return pieces.filter { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
+    }
+
+    private static func isCookieNameChar(_ character: Character) -> Bool {
+        character.isLetter || character.isNumber || character == "_" || character == "-" || character == "."
     }
 
     /// 合并 Cookie, 空值不覆盖已有有效值
@@ -339,12 +446,12 @@ actor LoginSession {
     private func warmupQzoneSession(cookies: inout [String: String], userAgent: String, uin: String) async {
         if let url = URL(string: sURL) {
             do {
-                let (_, response) = try await performRequest(
+                let (_, http, hopCookies) = try await performRequest(
                     url,
                     headers: ["User-Agent": userAgent, "Cookie": QzoneLoginPrimitives.cookieHeader(cookies)]
                 )
-                if let http = response as? HTTPURLResponse, (200..<400).contains(http.statusCode) {
-                    mergeCookies(cookiesForRequest(url: url), into: &cookies)
+                if (200..<400).contains(http.statusCode) {
+                    mergeCookies(hopCookies, into: &cookies)
                 }
             } catch {
                 // 预热失败不影响登录
