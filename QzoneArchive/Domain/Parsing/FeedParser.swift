@@ -75,8 +75,8 @@ enum FeedParser {
                 }
                 continue
             }
-            // 其余事件类型按动态正文处理
-            let dynamic = parseOriginalDynamic(feed, ownerUin: account.qqUin)
+            // 其余事件类型按动态正文处理; 缺少 original.cell_id.cellid 的记录原实现直接跳过
+            guard let dynamic = parseOriginalDynamic(feed, ownerUin: account.qqUin) else { continue }
             let post = ArchivePost(
                 id: 0,
                 accountID: account.id,
@@ -116,122 +116,99 @@ enum FeedParser {
 
     // MARK: - 单条互动记录
 
-    /// 解析一条互动记录
+    /// 解析一条互动记录, 字段与路径与桌面端 parseFeed 逐条对应
     static func parseFeed(_ feed: [String: Any]) -> ParsedFeed {
-        let cellID = string(feed["cell_id"])
-            ?? string(feed["cellId"])
-            ?? string(feed["cellid"])
-            ?? string(jsonPointer(feed, "/cell_id"))
-            ?? string(jsonPointer(feed, "/cell_common/cell_id"))
-            ?? ""
-        let key = keyFrom(feed: feed, cellID: cellID)
-        let eventType = integer(feed["event_type"])
-            ?? integer(feed["eventType"])
-            ?? integer(jsonPointer(feed, "/cell_common/event_type"))
-            ?? 0
-        let eventTime = integer(feed["event_time"])
-            ?? integer(feed["eventTime"])
-            ?? integer(jsonPointer(feed, "/cell_common/event_time"))
-            ?? integer(jsonPointer(feed, "/cell_common/time"))
-            ?? 0
-        let title = string(feed["title"])
-            ?? string(jsonPointer(feed, "/cell_common/title"))
-        let content = string(feed["content"])
-            ?? string(jsonPointer(feed, "/cell_common/content"))
-            ?? string(jsonPointer(feed, "/cell_common/richtext"))
-            ?? string(jsonPointer(feed, "/cell_common/summary"))
-        let eventSummary = string(feed["event_summary"])
-            ?? string(jsonPointer(feed, "/cell_common/event_summary"))
-            ?? string(jsonPointer(feed, "/cell_common/summary"))
-        let actorUin = string(feed["actor_uin"])
-            ?? string(feed["actorUin"])
-            ?? string(jsonPointer(feed, "/cell_userinfo/user/uin"))
-            ?? string(jsonPointer(feed, "/cell_userinfo/uin"))
-        let actorName = string(feed["actor_name"])
-            ?? string(feed["actorName"])
-            ?? string(jsonPointer(feed, "/cell_userinfo/user/nickname"))
-            ?? string(jsonPointer(feed, "/cell_userinfo/nickname"))
-        let originalAuthorUin = string(feed["original_author_uin"])
-            ?? string(feed["originalAuthorUin"])
-            ?? string(jsonPointer(feed, "/cell_original_author/uin"))
-        let originalAuthorName = string(feed["original_author_name"])
-            ?? string(feed["originalAuthorName"])
-            ?? string(jsonPointer(feed, "/cell_original_author/nickname"))
-        let picturesJSON = stableJSON(jsonPointer(feed, "/cell_pic"))
-        let videoJSON = stableJSON(jsonPointer(feed, "/cell_video"))
-        let commentsJSON = stableJSON(jsonPointer(feed, "/cell_comments"))
-        let rawJSON = stableJSON(feed) ?? "{}"
+        let cellID = textAt(feed, "/original/cell_id/cellid")
+        let eventTime = asInteger(jsonPointer(feed, "/comm/time")) ?? 0
+        let eventType = asInteger(jsonPointer(feed, "/comm/subid")) ?? 0
+        let actorUin = textAt(feed, "/userinfo/user/uin")
+        let actorLabel = actorUin ?? "unknown"
+        let feedSkey = textAt(feed, "/comm/feedskey")
+            ?? textAt(feed, "/original/cell_comm/feedskey")
+        var feedKey = feedSkey
+        if feedKey == nil {
+            if let cellID = cellID {
+                feedKey = "\(eventType):\(cellID):\(eventTime):\(actorLabel)"
+            } else {
+                feedKey = "fallback:\(eventType):\(eventTime):\(actorLabel):\(formatFeedHash(stableFeedHash(feed)))"
+            }
+        }
+        let pictures = jsonPointer(feed, "/original/cell_pic")
+        let pictureItems = pictures.flatMap { jsonPointer($0, "/picdata/pic") }
         return ParsedFeed(
-            feedKey: key,
-            cellID: cellID,
+            feedKey: feedKey ?? "",
+            cellID: cellID ?? "",
             eventType: eventType,
             eventTime: eventTime,
-            title: title,
-            content: content,
-            eventSummary: eventSummary,
+            title: textAt(feed, "/title/title"),
+            content: textAt(feed, "/original/cell_summary/summary"),
+            eventSummary: textAt(feed, "/summary/summary"),
             actorUin: actorUin,
-            actorName: actorName,
-            originalAuthorUin: originalAuthorUin,
-            originalAuthorName: originalAuthorName,
-            pictureCount: pictureCount(picturesJSON),
-            picturesJSON: picturesJSON,
-            videoJSON: videoJSON,
-            commentsJSON: commentsJSON,
-            rawJSON: rawJSON
+            actorName: textAt(feed, "/userinfo/user/nickname"),
+            originalAuthorUin: textAt(feed, "/original/cell_userinfo/user/uin"),
+            originalAuthorName: textAt(feed, "/original/cell_userinfo/user/nickname"),
+            pictureCount: (pictureItems as? [Any])?.count ?? 0,
+            picturesJSON: stableJSON(pictures),
+            videoJSON: stableJSON(nonNullValue(jsonPointer(feed, "/original/cell_video"))),
+            commentsJSON: stableJSON(nonNullValue(jsonPointer(feed, "/original/cell_comment"))),
+            rawJSON: stableJSON(feed) ?? "{}"
         )
     }
 
-    /// 生成互动记录唯一键
-    static func keyFrom(feed: [String: Any], cellID: String) -> String {
-        let keys = ["key", "id", "feed_key", "feedKey", "cell_key"]
-        for key in keys {
-            if let value = string(feed[key]), !value.isEmpty { return value }
+    /// FNV-1a 64 位散列, 与 Rust 版 stable_feed_hash 逐位一致
+    static func stableFeedHash(_ value: Any) -> UInt64 {
+        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
+        for byte in (stableJSON(value) ?? "").utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x1_0000_0000_01b3
         }
-        let eventType = integer(feed["event_type"]) ?? integer(jsonPointer(feed, "/cell_common/event_type")) ?? 0
-        let eventTime = integer(feed["event_time"]) ?? integer(jsonPointer(feed, "/cell_common/event_time")) ?? 0
-        let actor = string(feed["actor_uin"])
-            ?? string(jsonPointer(feed, "/cell_userinfo/user/uin"))
-            ?? string(jsonPointer(feed, "/cell_userinfo/uin"))
-            ?? ""
-        return "\(cellID)-\(eventType)-\(eventTime)-\(actor)"
+        return hash
+    }
+
+    /// 16 位小写十六进制, 对应 Rust 版 {:016x}
+    static func formatFeedHash(_ hash: UInt64) -> String {
+        let digits = Array("0123456789abcdef".utf8)
+        var text = ""
+        for shift in stride(from: 60, through: 0, by: -4) {
+            text.append(Character(UnicodeScalar(digits[Int((hash >> UInt64(shift)) & 0xF)])))
+        }
+        return text
     }
 
     // MARK: - 动态
 
-    /// 解析原始动态
-    static func parseOriginalDynamic(_ feed: [String: Any], ownerUin: String) -> ParsedDynamic {
-        let authorUin = string(jsonPointer(feed, "/cell_userinfo/user/uin"))
-            ?? string(jsonPointer(feed, "/cell_userinfo/uin"))
-        let authorName = string(jsonPointer(feed, "/cell_userinfo/user/nickname"))
-            ?? string(jsonPointer(feed, "/cell_userinfo/nickname"))
-        let cellID = string(feed["cell_id"])
-            ?? string(feed["cellId"])
-            ?? string(jsonPointer(feed, "/cell_common/cell_id"))
-            ?? ""
-        let publishedAt = integer(feed["published_at"])
-            ?? integer(jsonPointer(feed, "/cell_common/time"))
-            ?? integer(jsonPointer(feed, "/cell_common/published_at"))
+    /// 解析原始动态, 与桌面端 saveOriginalDynamic 逐条对应。
+    /// 缺少 original 或其中没有 cell_id 时返回 nil (原实现直接跳过该条)
+    static func parseOriginalDynamic(_ feed: [String: Any], ownerUin: String) -> ParsedDynamic? {
+        guard let original = jsonPointer(feed, "/original") as? [String: Any],
+              let cellID = textAt(original, "/cell_id/cellid") else { return nil }
+        let appid = asInteger(jsonPointer(original, "/cell_comm/appid")) ?? 0
+        let feedSkey = textAt(original, "/cell_comm/feedskey") ?? ""
+        let isGuestbook = appid == 334 || feedSkey.hasPrefix("334_")
+        let publishedAt = asInteger(jsonPointer(original, "/cell_comm/time"))
+            ?? asInteger(jsonPointer(feed, "/comm/time"))
             ?? 0
-        let content = string(feed["content"])
-            ?? string(jsonPointer(feed, "/cell_common/content"))
-            ?? string(jsonPointer(feed, "/cell_common/richtext"))
-            ?? string(jsonPointer(feed, "/cell_common/summary"))
-            ?? ""
-        let isGuestbook = string(feed["cell_id"])?.contains("guestbook") == true
-            || string(feed["type"])?.contains("guestbook") == true
-        let category: ArchiveCategory = isGuestbook ? .guestbook : (authorUin == ownerUin ? .self_ : .other)
-        let picturesJSON = stableJSON(jsonPointer(feed, "/cell_pic"))
-        let videoJSON = stableJSON(jsonPointer(feed, "/cell_video"))
+        let content = isGuestbook
+            ? textAt(feed, "/summary/summary")
+            : textAt(original, "/cell_summary/summary")
+        let authorUin = isGuestbook
+            ? textAt(feed, "/userinfo/user/uin")
+            : textAt(original, "/cell_userinfo/user/uin")
+        let authorName = isGuestbook
+            ? textAt(feed, "/userinfo/user/nickname")
+            : textAt(original, "/cell_userinfo/user/nickname")
+        let pictures = jsonPointer(original, "/cell_pic")
+        let pictureItems = pictures.flatMap { jsonPointer($0, "/picdata/pic") }
         return ParsedDynamic(
             cellID: cellID,
             publishedAt: publishedAt,
-            content: content,
+            content: content ?? "",
             authorUin: authorUin,
             authorName: authorName,
-            category: category,
-            picturesJSON: picturesJSON,
-            videoJSON: videoJSON,
-            pictureCount: pictureCount(picturesJSON)
+            category: isGuestbook ? .guestbook : (authorUin == ownerUin ? .self_ : .other),
+            picturesJSON: stableJSON(pictures),
+            videoJSON: stableJSON(nonNullValue(jsonPointer(original, "/cell_video"))),
+            pictureCount: (pictureItems as? [Any])?.count ?? 0
         )
     }
 
@@ -336,114 +313,186 @@ enum FeedParser {
 
     // MARK: - 媒体地址
 
-    /// 从图片字段提取候选地址
+    /// 逐张图片的首选地址, 对应桌面端 pictureUrls
     static func pictureURLs(_ json: String?) -> [String] {
-        guard let json, let data = json.data(using: .utf8) else { return [] }
+        guard let pictures = tryParseJsonText(json) as? [Any] else { return [] }
+        return pictures.compactMap { pictureCandidates($0).first }
+    }
+
+    /// 单张图片的候选地址, 对应桌面端 pictureUrlCandidates (保序去重, 过滤空串)
+    static func pictureUrlCandidates(_ json: String?) -> [[String]] {
+        guard let json = json, let pictures = tryParseJsonText(json) as? [Any] else { return [] }
+        return pictures.map { pictureCandidates($0) }
+    }
+
+    /// 单张图片的候选地址 (顺序保留, 去重, 空串过滤)
+    static func pictureCandidates(_ picture: Any) -> [String] {
         var candidates: [String] = []
-        if let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-            for item in array {
-                if let urls = item["urls"] as? [[String: Any]] {
-                    for entry in urls {
-                        if let url = string(entry["url"]) { candidates.append(url) }
-                    }
-                } else if let url = item["url"] as? String {
-                    candidates.append(url)
-                }
-                if let url = string(item["raw"]) { candidates.append(url) }
-                if let url = string(item["origin"]) { candidates.append(url) }
+        let photoURL = jsonPointer(picture, "/photourl")
+        var entries: [Any] = []
+        if let list = photoURL as? [Any] {
+            entries = list
+        } else if let table = photoURL as? [String: Any] {
+            // JS 的 Object.values 对整数键升序优先; Swift 字典无序, 用键排序保证确定性
+            entries = table.keys.sorted().compactMap { table[$0] }
+        }
+        for entry in entries {
+            if let url = textAt(entry, "/url") {
+                candidates.append(url.trimmingCharacters(in: .whitespacesAndNewlines))
             }
-        } else if let array = try? JSONSerialization.jsonObject(with: data) as? [String] {
-            candidates.append(contentsOf: array)
+        }
+        if let busi = textAt(picture, "/busi_param/-1") {
+            candidates.append(busi.trimmingCharacters(in: .whitespacesAndNewlines))
         }
         var seen = Set<String>()
         var result: [String] = []
-        for candidate in candidates where !candidate.isEmpty && !seen.contains(candidate) {
+        for candidate in candidates where !candidate.isEmpty {
+            guard !seen.contains(candidate) else { continue }
             seen.insert(candidate)
-            result.append(candidate)
+            result.append(candidate.hasPrefix("//") ? "https:" + candidate : candidate)
         }
         return result
     }
 
-    /// 从视频字段提取候选地址
+    /// 视频地址, 对应桌面端 videoUrls (先单数 videourl, 再复数 videourls 的 url)
     static func videoURLs(_ json: String?) -> [String] {
-        guard let json, let data = json.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return [] }
+        guard let root = tryParseJsonText(json) else { return [] }
         var candidates: [String] = []
-        let keys = ["url", "video_url", "videoUrl", "raw_url", "rawUrl", "download_url", "downloadUrl", "play_url", "playUrl", "hd_url", "hdUrl", "sd_url", "sdUrl"]
-        for key in keys {
-            if let url = string(object[key]) { candidates.append(url) }
+        if let single = textAt(root, "/videourl") { candidates.append(single) }
+        if let table = jsonPointer(root, "/videourls") as? [String: Any] {
+            for key in table.keys.sorted() {
+                if let url = textAt(table[key] as Any, "/url") { candidates.append(url) }
+            }
         }
         var seen = Set<String>()
         return candidates.filter { !$0.isEmpty && seen.insert($0).inserted }
     }
 
-    /// 视频封面地址
+    /// 视频封面, 对应桌面端 videoCoverUrl
     static func videoCoverURL(_ json: String?) -> String? {
-        guard let json, let data = json.data(using: .utf8),
-              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
-        else { return nil }
-        let keys = ["cover_url", "coverUrl", "cover", "pic_url", "picUrl", "thumbnail", "preview_url", "previewUrl"]
-        for key in keys {
-            if let url = string(object[key]) { return url }
+        guard let root = tryParseJsonText(json) else { return nil }
+        if let first = textAt(root, "/coverurl/0/url") { return first }
+        guard let table = jsonPointer(root, "/coverurl") as? [String: Any] else { return nil }
+        for key in table.keys.sorted() {
+            if let url = textAt(table[key] as Any, "/url") { return url }
         }
         return nil
     }
 
-    // MARK: - 工具
-
-    /// 取字符串字段
-    static func string(_ value: Any?) -> String? {
-        if let string = value as? String { return string }
-        if let number = value as? NSNumber { return number.stringValue }
-        return nil
-    }
-
-    /// 取整数字段
-    static func integer(_ value: Any?) -> Int? {
-        if let number = value as? Int { return number }
-        if let number = value as? NSNumber { return number.intValue }
-        if let string = value as? String { return Int(string) }
-        return nil
-    }
-
-    /// 按 JSON Pointer 路径取值, 支持数字索引
+    /// JSON Pointer (RFC 6901), 与桌面端 jsonPointer 行为一致
     static func jsonPointer(_ object: Any, _ path: String) -> Any? {
-        let parts = path.split(separator: "/").dropFirst()
-        var current: Any? = object
-        for part in parts {
-            if let array = current as? [Any], let index = Int(part) {
-                current = array.indices.contains(index) ? array[index] : nil
-            } else if let dictionary = current as? [String: Any] {
-                current = dictionary[String(part)]
+        if path.isEmpty { return object }
+        guard path.hasPrefix("/") else { return nil }
+        var current: Any = object
+        for rawToken in path.dropFirst().split(separator: "/", omittingEmptySubsequences: false) {
+            let token = rawToken
+                .replacingOccurrences(of: "~1", with: "/")
+                .replacingOccurrences(of: "~0", with: "~")
+            if let array = current as? [Any] {
+                guard isDecimalToken(token), let index = Int(token), index < array.count else { return nil }
+                current = array[index]
+            } else if let dictionary = current as? [String: Any], let next = dictionary[token] {
+                current = next
             } else {
                 return nil
             }
-            if current == nil { return nil }
         }
         return current
     }
 
-    /// 图片数量
-    static func pictureCount(_ json: String?) -> Int {
-        guard let json, let data = json.data(using: .utf8) else { return 0 }
-        if let array = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] { return array.count }
-        if let array = try? JSONSerialization.jsonObject(with: data) as? [String] { return array.count }
-        return 0
+    /// 数组下标只接受纯十进制数字 (对应 JS 的 ^\d+$ 判定)
+    private static func isDecimalToken(_ token: Substring) -> Bool {
+        !token.isEmpty && token.utf8.allSatisfy { (0x30...0x39).contains($0) }
     }
 
-    /// 稳定序列化: 键排序, 保证同一条数据的 JSON 一致
-    static func stableJSON(_ value: Any?) -> String? {
-        guard let value else { return nil }
-        guard JSONSerialization.isValidJSONObject(value) else {
-            return (value as? String).map { "\"\($0)\"" }
+    /// 取指针指向的文本: 非空字符串原样返回, 数字转十进制文本, 其余 nil
+    static func textAt(_ object: Any, _ path: String) -> String? {
+        guard let target = jsonPointer(object, path) else { return nil }
+        if target is Bool { return nil }
+        if let text = target as? String { return text.isEmpty ? nil : text }
+        if let number = target as? NSNumber { return number.stringValue }
+        return nil
+    }
+
+    /// 只接受整数数字 (JS Number.isInteger), 字符串不参与转换
+    static func asInteger(_ value: Any?) -> Int? {
+        guard let value = value, !(value is Bool), let number = value as? NSNumber else { return nil }
+        let raw = number.doubleValue
+        guard raw.isFinite, raw.rounded() == raw, abs(raw) <= 9_007_199_254_740_992 else { return nil }
+        return Int(raw)
+    }
+
+    /// 过滤 null 值 (JS 的 null/undefined)
+    static func nonNullValue(_ value: Any?) -> Any? {
+        guard let value = value, !(value is NSNull) else { return nil }
+        return value
+    }
+
+    /// 解析 JSON 文本, 失败返回 nil
+    static func tryParseJsonText(_ text: String?) -> Any? {
+        guard let text = text, let data = text.data(using: .utf8) else { return nil }
+        return try? JSONSerialization.jsonObject(with: data, options: [.fragmentsAllowed])
+    }
+
+    /// 从任意值取非空文本
+    static func string(_ value: Any?) -> String? {
+        guard let value = value else { return nil }
+        if let text = value as? String { return text.isEmpty ? nil : text }
+        if let number = value as? NSNumber { return number.stringValue }
+        return nil
+    }
+
+    /// 从任意值取整数
+    static func integer(_ value: Any?) -> Int? {
+        asInteger(value)
+    }
+
+    /// 校验归档分类, 与 Rust 版 validate_category 对应
+    static func validateCategory(_ category: String) throws {
+        guard category == "self" || category == "other" || category == "guestbook" else {
+            throw QzoneError.parseFailed("非法归档分类: \(category)")
         }
-        guard let data = try? JSONSerialization.data(
-            withJSONObject: value,
-            options: [.sortedKeys, .withoutEscapingSlashes]
-        ) else { return nil }
+    }
+
+    static func pictureCount(_ json: String?) -> Int {
+        guard let root = tryParseJsonText(json),
+              let pictures = jsonPointer(root, "/picdata/pic") as? [Any] else { return 0 }
+        return pictures.count
+    }
+
+    /// 稳定 JSON 文本: 递归按键升序并紧凑输出 (对应桌面端 stableJsonText)
+    static func stableJSON(_ value: Any?) -> String? {
+        guard let value = value,
+              let normalized = normalizeJSONValue(value),
+              JSONSerialization.isValidJSONObject(normalized),
+              let data = try? JSONSerialization.data(withJSONObject: normalized, options: [.sortedKeys]) else {
+            return nil
+        }
         return String(data: data, encoding: .utf8)
     }
+
+    /// 递归按键排序, 丢弃无法序列化的值
+    private static func normalizeJSONValue(_ value: Any) -> Any? {
+        switch value {
+        case let dictionary as [String: Any]:
+            var result: [String: Any] = [:]
+            for (key, element) in dictionary {
+                if let normalized = normalizeJSONValue(element) { result[key] = normalized }
+            }
+            return result
+        case let array as [Any]:
+            return array.compactMap { normalizeJSONValue($0) }
+        case let text as String:
+            return text
+        case let number as NSNumber:
+            return number
+        case is NSNull:
+            return NSNull()
+        default:
+            return nil
+        }
+    }
+
 }
 
 /// 解析后的原始动态
