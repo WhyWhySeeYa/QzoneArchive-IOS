@@ -183,9 +183,16 @@ actor LoginSession {
         guard let callbackUin = QzoneLoginPrimitives.callbackQueryValue(text, name: "uin") else {
             throw QzoneError.loginFailed("登录成功响应中缺少 uin")
         }
-        let loginURLString = QzoneLoginPrimitives.pollLoginURL(text) ?? fallbackCheckSigURL(text: text)
+        guard let callbackURLString = QzoneLoginPrimitives.pollLoginURL(text) ?? fallbackCheckSigURL(text: text),
+              let loginURL = URL(string: callbackURLString),
+              let scheme = loginURL.scheme?.lowercased(),
+              scheme == "http" || scheme == "https"
+        else {
+            // 没有合法 scheme 的地址交给 URLSession 只会抛 unsupported URL, 这里直接给可读提示
+            throw QzoneError.loginFailed("扫码回调地址无效，请刷新二维码重试")
+        }
         let (_, confirmCookies) = try await requestText(
-            URL(string: loginURLString) ?? URL(string: sURL)!,
+            loginURL,
             headers: ["User-Agent": current.userAgent, "Cookie": QzoneLoginPrimitives.cookieHeader(current.cookies)],
             failurePrefix: "确认 QQ 登录失败："
         )
@@ -219,10 +226,27 @@ actor LoginSession {
 
     // MARK: - 内部实现
 
-    private func fallbackCheckSigURL(text: String) -> String {
+    /// 回调里没有可用跳转地址时, 用 check_sig 兜底 (需要 uin 与 ptsigx)
+    private func fallbackCheckSigURL(text: String) -> String? {
         let ptsigx = QzoneLoginPrimitives.callbackQueryValue(text, name: "ptsigx") ?? ""
         let uin = QzoneLoginPrimitives.callbackQueryValue(text, name: "uin") ?? ""
-        return "\(checkSigURL)?pttype=1&uin=\(uin)&service=ptqrlogin&nodirect=0&ptsigx=\(ptsigx)&s_url=\(sURL)&f_url=&ptlang=2052&ptredirect=100&aid=\(QzoneLoginPrimitives.appID)&daid=\(QzoneLoginPrimitives.daID)"
+        guard !ptsigx.isEmpty, !uin.isEmpty else { return nil }
+
+        var components = URLComponents(string: checkSigURL)
+        components?.queryItems = [
+            URLQueryItem(name: "pttype", value: "1"),
+            URLQueryItem(name: "uin", value: uin),
+            URLQueryItem(name: "service", value: "ptqrlogin"),
+            URLQueryItem(name: "nodirect", value: "0"),
+            URLQueryItem(name: "ptsigx", value: ptsigx),
+            URLQueryItem(name: "s_url", value: sURL),
+            URLQueryItem(name: "f_url", value: ""),
+            URLQueryItem(name: "ptlang", value: "2052"),
+            URLQueryItem(name: "ptredirect", value: "100"),
+            URLQueryItem(name: "aid", value: QzoneLoginPrimitives.appID),
+            URLQueryItem(name: "daid", value: QzoneLoginPrimitives.daID),
+        ]
+        return components?.url?.absoluteString
     }
 
     private func xloginQuery() throws -> URL {

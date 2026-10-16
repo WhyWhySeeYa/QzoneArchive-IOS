@@ -58,10 +58,15 @@ enum QzoneLoginPrimitives {
     }
 
     /// 取第 3 个单引号参数, 仅当首参为 0 时视为登录跳转地址
+    /// 从 ptuiCB 回调里取跳转地址
+    /// 格式: ptuiCB('状态码','子状态码','跳转URL','提示类型','提示文案','昵称')
+    /// 按单引号切分后, 下标 1=状态码, 3=子状态码, 5=跳转URL
     static func pollLoginURL(_ text: String) -> String? {
         let parts = text.components(separatedBy: "'")
-        guard parts.count >= 4, parts[1] == "0" else { return nil }
-        return parts[3]
+        guard parts.count >= 6, parts[1] == "0" else { return nil }
+        let candidate = parts[5].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard candidate.hasPrefix("http://") || candidate.hasPrefix("https://") else { return nil }
+        return candidate
     }
 
     /// 去掉 uin 前缀的 o 与前导 0
