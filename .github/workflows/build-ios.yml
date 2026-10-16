@@ -71,6 +71,26 @@ jobs:
             DEVELOPMENT_TEAM="" \
             test-without-building 2>&1 | tee test.log || true
 
+      # 真机包：模拟器包平台标记为 IOSSIMULATOR，装到设备上 dyld 会以
+      # "wrong platform to load into process" 直接终止，必须单独出 iphoneos 包
+      - name: Build (unsigned, device)
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -project QzoneArchive.xcodeproj \
+            -scheme QzoneArchive \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/DeviceData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_ENTITLEMENTS="" \
+            DEVELOPMENT_TEAM="" \
+            ONLY_ACTIVE_ARCH=NO \
+            clean build 2>&1 | tee device-build.log
+
       - name: Package .app / .ipa
         if: success()
         run: |
@@ -81,11 +101,27 @@ jobs:
           rm -rf Payload
           zip -qr QzoneArchive-simulator.zip "$APP"
 
+          DEVICE_APP=$(find build/DeviceData/Build/Products/Release-iphoneos -name "QzoneArchive.app" -type d | head -1)
+          cp -r "$DEVICE_APP" Payload/
+          zip -qry QzoneArchive-device-unsigned.ipa Payload
+          rm -rf Payload
+          # 平台标记自检：真机包必须是 iphoneos，模拟器包是 iphonesimulator
+          echo "--- device ipa platform check ---"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleSupportedPlatforms:0" "$DEVICE_APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :DTPlatformName" "$DEVICE_APP/Info.plist"
+          echo "--- simulator ipa platform check ---"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleSupportedPlatforms:0" "$APP/Info.plist"
+          /usr/libexec/PlistBuddy -c "Print :DTPlatformName" "$APP/Info.plist"
+          lipo -info "$DEVICE_APP/QzoneArchive" || true
+          ls -la QzoneArchive-device-unsigned.ipa
+
       - uses: actions/upload-artifact@v4
         if: success()
         with:
           name: QzoneArchive-ios
           path: |
+            QzoneArchive-device-unsigned.ipa
             QzoneArchive-unsigned.ipa
             QzoneArchive-simulator.zip
             build/DerivedData/Build/Products/Debug-iphonesimulator/**/*.dSYM
+            build/DeviceData/Build/Products/Release-iphoneos/**/*.dSYM
