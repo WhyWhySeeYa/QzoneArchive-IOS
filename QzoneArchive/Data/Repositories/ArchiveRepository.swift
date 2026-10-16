@@ -361,24 +361,21 @@ final class SQLiteArchiveRepository: ArchiveRepository {
                 arguments: [account.qqUin]
             ).first?["total"]
         )
-        let pictureRows = try self.database.executeQuery(
-            "SELECT picture_urls_json FROM archive_posts WHERE account_id=? AND picture_urls_json IS NOT NULL",
+        let mediaRows = try self.database.executeQuery(
+            "SELECT picture_urls_json, video_urls_json FROM archive_posts WHERE account_id=?",
             arguments: [account.qqUin]
         )
+        // 统计媒体总数 (原项目按媒体条目计数, 不是按动态条数)
+        let decodeURLs: (Any?) -> [String] = { value in
+            guard let json = value as? String, let data = json.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode([String].self, from: data) else { return [] }
+            return decoded
+        }
         var pictures = 0
         var videos = 0
-        for row in pictureRows {
-            let json = row["picture_urls_json"] as? String ?? ""
-            if let data = json.data(using: .utf8),
-               let decoded = try? JSONDecoder().decode([String].self, from: data) {
-                pictures += decoded.count
-            }
-            let videoJSON = row["video_urls_json"] as? String ?? ""
-            if let data = videoJSON.data(using: .utf8),
-               let decoded = try? JSONDecoder().decode([String].self, from: data),
-               !decoded.isEmpty {
-                videos += 1
-            }
+        for row in mediaRows {
+            pictures += decodeURLs(row["picture_urls_json"]).count
+            videos += decodeURLs(row["video_urls_json"]).count
         }
         return ArchiveOverview(
             dynamics: dynamics,
@@ -394,13 +391,17 @@ final class SQLiteArchiveRepository: ArchiveRepository {
     func interactionRanking(account: Account, limit: Int) throws -> [InteractionRank] {
         let rows = try self.database.executeQuery(
             """
-            SELECT author_uin AS uin,
-                   COALESCE(NULLIF(MAX(author_name),''), author_uin) AS nickname,
-                   COUNT(*) AS interactions
+            SELECT uin,
+                   COALESCE(NULLIF(MAX(nickname),''), uin) AS nickname,
+                   SUM(liked) AS likes,
+                   SUM(commented) AS comments,
+                   SUM(liked + commented) AS interactions
             FROM (
-              SELECT author_uin, author_name FROM comments WHERE account_id=? AND author_uin IS NOT NULL AND author_uin<>'' AND author_uin<>?
+              SELECT author_uin AS uin, author_name AS nickname, 0 AS liked, 1 AS commented
+              FROM comments WHERE account_id=? AND author_uin IS NOT NULL AND author_uin<>'' AND author_uin<>?
               UNION ALL
-              SELECT author_uin, author_name FROM likes WHERE account_id=? AND author_uin IS NOT NULL AND author_uin<>'' AND author_uin<>?
+              SELECT author_uin AS uin, author_name AS nickname, 1 AS liked, 0 AS commented
+              FROM likes WHERE account_id=? AND author_uin IS NOT NULL AND author_uin<>'' AND author_uin<>?
             )
             GROUP BY uin ORDER BY interactions DESC LIMIT ?
             """,
@@ -411,8 +412,8 @@ final class SQLiteArchiveRepository: ArchiveRepository {
                 uin: row["uin"] as? String ?? "",
                 nickname: row["nickname"] as? String ?? "",
                 interactions: Self.int(row["interactions"]),
-                likes: 0,
-                comments: 0
+                likes: Self.int(row["likes"]),
+                comments: Self.int(row["comments"])
             )
         }
     }
@@ -440,7 +441,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
         arguments.append(max(0, offset))
         let rows = try self.database.executeQuery(
             """
-            SELECT id, published_at, content, author_uin, author_name,
+            SELECT id, published_at, content_text, author_uin, author_name,
                    picture_urls_json, video_urls_json, video_cover_url
             FROM archive_posts
             WHERE account_id=? AND category IN ('self','other')
@@ -454,7 +455,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
         for row in rows {
             let id = Self.int(row["id"])
             let publishedAt = Self.doubleOrNil(row["published_at"]).map { Date(timeIntervalSince1970: $0) }
-            let content = row["content"] as? String
+            let content = row["content_text"] as? String
             let authorUin = row["author_uin"] as? String
             let authorName = row["author_name"] as? String
             let pictures = Self.jsonStrings(row["picture_urls_json"])
@@ -639,7 +640,19 @@ final class SQLiteArchiveRepository: ArchiveRepository {
 
     // MARK: - 任务
 
+    /// 把账号 UUID 解析成表内统一使用的 QQ 号
+    private func resolveAccountUin(_ accountID: UUID) throws -> String {
+        let rows = try database.executeQuery(
+            "SELECT qq_uin FROM accounts WHERE id=?",
+            arguments: [accountID.uuidString]
+        )
+        if let uin = rows.first?["qq_uin"] as? String, !uin.isEmpty { return uin }
+        return accountID.uuidString
+    }
+
     func upsertTask(_ task: ArchiveTask) throws {
+        // archive_tasks.account_id 统一存 QQ 号 (与动态/检查点等表一致), 模型持有 UUID, 这里映射一次
+        let accountUin = try resolveAccountUin(task.accountID)
         _ = try self.database.executeUpdate(
             """
             INSERT INTO archive_tasks
@@ -656,7 +669,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
               updated_at=excluded.updated_at
             """,
             arguments: [
-                task.id, task.accountID, task.taskType, task.status.rawValue, task.cursor,
+                task.id, accountUin, task.taskType, task.status.rawValue, task.cursor,
                 task.currentPage, task.discoveredCount, task.savedCount, task.skippedCount,
                 task.failedCount, task.downloadedCount, task.startedAt, task.finishedAt,
                 task.lastError, task.createdAt, Date(),
