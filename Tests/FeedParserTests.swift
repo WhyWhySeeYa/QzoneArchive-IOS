@@ -318,6 +318,15 @@ final class FeedParserTests: XCTestCase {
             eventSummary: "回复了你：同感",
             eventTime: 1_700_000_300
         )
+        if let root = FeedParser.tryParseJsonText(json) {
+            let main = FeedParser.jsonPointer(root, "/main_comment")
+            print("DBG root keys:", Array((root as? [String: Any])?.keys ?? [:].keys))
+            print("DBG main:", main.map { String(describing: $0) } ?? "nil")
+            print("DBG replynum:", FeedParser.asInteger(FeedParser.jsonPointer(main, "/replynum")) ?? -1)
+            print("DBG date:", FeedParser.asInteger(FeedParser.jsonPointer(main, "/date")) ?? -1)
+        } else {
+            print("DBG parse failed")
+        }
         XCTAssertEqual(comment.content, "写得不错")
         XCTAssertEqual(comment.replies.count, 2, "回复通知应补一条回复")
         XCTAssertEqual(comment.replies.last?.content, "回复了你：同感")
