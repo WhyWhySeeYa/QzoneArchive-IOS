@@ -260,6 +260,18 @@ actor ArchiveEngine {
         _ = try await startArchive(account: account, settings: settings)
     }
 
+    /// 暂停归档
+    func pause() {
+        progress.status = .paused
+        progress.message = "已暂停，进度已保存"
+    }
+
+    /// 恢复归档
+    func resume() {
+        progress.status = .running
+        progress.message = "继续归档"
+    }
+
     // MARK: - 内部流程
 
     /// 频率保护: 窗口内超过页数上限时暂停并等待
