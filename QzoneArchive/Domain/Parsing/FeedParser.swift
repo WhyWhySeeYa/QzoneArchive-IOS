@@ -43,8 +43,8 @@ enum FeedParser {
     ///
     /// 把一页原始互动数据整理成动态模型
     ///
-    /// 与桌面端 parseFeedPage 之后写入 archive_feeds 的行为对应:
-    /// 动态正文来自原始动态记录, 评论与点赞按 cell_id 聚合到同一动态上
+    /// 与桌面端 saveFeedRows 的行为对应: 每条记录都先按 original 更新动态
+    /// (图片与视频在冲突时保留已有非空值), 评论与点赞再按 cell_id 聚合到同一动态上
     ///
     static func parsePosts(_ feeds: [[String: Any]], account: Account) -> [ArchivePost] {
         // 按 cell_id 聚合, 动态正文放在动态条目上
@@ -57,50 +57,69 @@ enum FeedParser {
         for feed in feeds {
             let parsed = parseFeed(feed)
             let cellID = parsed.cellID
+
+            // 原版对每条互动记录都执行 save_original_dynamic, 评论与点赞通知同样带 original
+            if let dynamic = parseOriginalDynamic(feed, ownerUin: account.qqUin), !dynamic.cellID.isEmpty {
+                let pictures = pictureURLs(dynamic.picturesJSON)
+                let videos = videoURLs(dynamic.videoJSON)
+                let cover = videoCoverURL(dynamic.videoJSON)
+                if var existing = dynamics[dynamic.cellID] {
+                    // 冲突更新时图片与视频保留库中已有的非空值
+                    if !pictures.isEmpty { existing.pictureURLs = pictures }
+                    if !videos.isEmpty { existing.videoURLs = videos }
+                    if let cover { existing.videoCoverURL = cover }
+                    existing.authorUin = dynamic.authorUin ?? existing.authorUin
+                    existing.authorName = dynamic.authorName ?? existing.authorName
+                    if !dynamic.content.isEmpty { existing.contentText = dynamic.content }
+                    if dynamic.publishedAt > 0 {
+                        existing.publishedAt = Date(timeIntervalSince1970: TimeInterval(dynamic.publishedAt))
+                    }
+                    existing.category = dynamic.category
+                    dynamics[dynamic.cellID] = existing
+                } else {
+                    order.append(dynamic.cellID)
+                    dynamics[dynamic.cellID] = ArchivePost(
+                        id: 0,
+                        accountID: account.id,
+                        sourceID: dynamic.cellID,
+                        authorUin: dynamic.authorUin,
+                        authorName: dynamic.authorName,
+                        contentText: dynamic.content,
+                        publishedAt: dynamic.publishedAt > 0
+                            ? Date(timeIntervalSince1970: TimeInterval(dynamic.publishedAt))
+                            : nil,
+                        archivedAt: Date(),
+                        postType: "text",
+                        sourceURL: nil,
+                        rawPayloadPath: nil,
+                        isDeleted: false,
+                        pictureURLs: pictures,
+                        videoURLs: videos,
+                        videoCoverURL: cover,
+                        likeCount: 0,
+                        commentCount: 0,
+                        category: dynamic.category,
+                        likes: [],
+                        comments: []
+                    )
+                }
+            }
+
             if parsed.eventType == eventTypeLike {
                 let user = LikeUser(uin: parsed.actorUin, nickname: parsed.actorName)
                 likesByCell[cellID, default: []].append(user)
                 continue
             }
             if parsed.eventType == eventTypeComment || parsed.eventType == eventTypeCommentAlt {
-                let comments = commentFromValues(
+                let comment = commentFromValues(
                     commentsJSON: parsed.commentsJSON,
                     actorUin: parsed.actorUin,
                     actorName: parsed.actorName,
                     eventSummary: parsed.eventSummary,
                     eventTime: parsed.eventTime
                 )
-                for comment in comments {
-                    commentsByCell[cellID, default: []].append(comment)
-                }
-                continue
+                commentsByCell[cellID, default: []].append(comment)
             }
-            // 其余事件类型按动态正文处理; 缺少 original.cell_id.cellid 的记录原实现直接跳过
-            guard let dynamic = parseOriginalDynamic(feed, ownerUin: account.qqUin) else { continue }
-            let post = ArchivePost(
-                id: 0,
-                accountID: account.id,
-                sourceID: dynamic.cellID.isEmpty ? parsed.feedKey : dynamic.cellID,
-                authorUin: dynamic.authorUin,
-                authorName: dynamic.authorName,
-                contentText: dynamic.content,
-                publishedAt: dynamic.publishedAt > 0 ? Date(timeIntervalSince1970: TimeInterval(dynamic.publishedAt)) : nil,
-                archivedAt: Date(),
-                postType: "text",
-                sourceURL: nil,
-                rawPayloadPath: nil,
-                isDeleted: false,
-                pictureURLs: pictureURLs(dynamic.picturesJSON),
-                videoURLs: videoURLs(dynamic.videoJSON),
-                videoCoverURL: videoCoverURL(dynamic.videoJSON),
-                likeCount: 0,
-                commentCount: 0,
-                category: dynamic.category,
-                likes: [],
-                comments: []
-            )
-            if dynamics[cellID] == nil { order.append(cellID) }
-            dynamics[cellID] = post
         }
 
         // 聚合评论与点赞
@@ -214,135 +233,180 @@ enum FeedParser {
 
     // MARK: - 评论
 
-    /// 取评论内容
-    static func commentContent(_ comment: [String: Any]) -> String {
-        let keys = ["comment", "content", "richtext", "text"]
-        for key in keys {
-            if let value = string(comment[key]), !value.isEmpty { return value }
-        }
-        return ""
+    /// 回复去重比较, 对应 Rust 版 same_reply 的 uin/content/created_at 三元组
+    static func sameReply(_ left: ArchivedReply, _ right: ArchivedReply) -> Bool {
+        left.uin == right.uin && left.content == right.content && left.createdAt == right.createdAt
     }
 
-    /// 取评论作者昵称
-    static func commentNickname(_ comment: [String: Any]) -> String? {
-        let keys = ["nickname", "name", "nick"]
-        for key in keys {
-            if let value = string(comment[key]), !value.isEmpty { return value }
+    /// 取数组字段, 非数组按空列表处理 (对应 array_field 的 and_then(as_array))
+    static func arrayField(_ value: Any?, _ pointers: String...) -> [Any] {
+        var current: Any? = value
+        for pointer in pointers {
+            guard let base = current else { return [] }
+            current = jsonPointer(base, pointer)
         }
-        if let user = comment["user"] as? [String: Any] {
-            return string(user["nickname"]) ?? string(user["name"])
-        }
-        return nil
+        return current as? [Any] ?? []
     }
 
-    /// 取评论作者 QQ
-    static func commentUin(_ comment: [String: Any]) -> String? {
-        let keys = ["uin", "qq", "user_uin", "userId"]
-        for key in keys {
-            if let value = string(comment[key]), !value.isEmpty { return value }
-        }
-        if let user = comment["user"] as? [String: Any] {
-            return string(user["uin"]) ?? string(user["id"])
-        }
-        return nil
+    /// 解析单条回复, 对应 Rust 版 reply_from_value, 缺少正文时返回 nil
+    static func replyFromValue(_ value: Any) -> ArchivedReply? {
+        guard let content = textAt(value, "/content") else { return nil }
+        return ArchivedReply(
+            uin: textAt(value, "/user/uin") ?? textAt(value, "/replyuser/uin"),
+            nickname: textAt(value, "/user/nickname") ?? textAt(value, "/replyuser/nickname"),
+            replyToUin: textAt(value, "/replyuser/uin")
+                ?? textAt(value, "/targetuser/uin")
+                ?? textAt(value, "/target/uin"),
+            replyToNickname: textAt(value, "/replyuser/nickname")
+                ?? textAt(value, "/targetuser/nickname")
+                ?? textAt(value, "/target/nickname"),
+            content: content,
+            createdAt: asInteger(jsonPointer(value, "/date")) ?? 0
+        )
     }
 
-    /// 取评论发布时间
-    static func commentTime(_ comment: [String: Any]) -> Int {
-        integer(comment["time"])
-            ?? integer(comment["created_at"])
-            ?? integer(comment["createdAt"])
-            ?? integer(comment["pubtime"])
-            ?? integer(comment["timestamp"])
-            ?? 0
-    }
-
-    /// 合并同一来源的评论, 去掉重复项
-    static func mergeComments(_ comments: [ParsedComment]) -> [ParsedComment] {
-        var seen = Set<String>()
-        var result: [ParsedComment] = []
-        for comment in comments {
-            let key = "\(comment.uin ?? "")-\(comment.createdAt)-\(comment.content)"
-            if seen.contains(key) { continue }
-            seen.insert(key)
-            result.append(comment)
-        }
-        return result.sorted { $0.createdAt < $1.createdAt }
-    }
-
-    /// 由互动记录字段构建评论
-    /// 从评论 JSON 中取出评论数组: 根既可能是数组, 也可能是 {"comments":[...]} 之类的字典
-    static func commentArray(in root: Any) -> [[String: Any]]? {
-        if let list = root as? [[String: Any]] { return list }
-        guard let dictionary = root as? [String: Any] else { return nil }
-        for key in ["comments", "comment", "data", "list", "items"] {
-            if let list = dictionary[key] as? [[String: Any]] { return list }
-        }
-        for value in dictionary.values {
-            if let list = value as? [[String: Any]], !list.isEmpty { return list }
-            if let nested = value as? [String: Any], let list = commentArray(in: nested) { return list }
-        }
-        return nil
-    }
-
+    ///
+    /// 由互动记录的评论字段构造评论, 与 Rust 版 comment_from_values 逐条对应
+    ///
+    /// 主评论取 main_comment; 主评论下的 replys 与同 commentid 的 comments 项回复合并去重;
+    /// 回复通知这类记录把回复正文与作者放在互动记录本身, 需要补一条指向最近一条对端回复的回复
+    ///
     static func commentFromValues(
         commentsJSON: String?,
         actorUin: String?,
         actorName: String?,
         eventSummary: String?,
         eventTime: Int
-    ) -> [ParsedComment] {
-        var result: [ParsedComment] = []
-        if let commentsJSON,
-           let data = commentsJSON.data(using: .utf8),
-           let root = try? JSONSerialization.jsonObject(with: data),
-           let array = commentArray(in: root) {
-            for comment in array {
-                result.append(
-                    ParsedComment(
-                        id: UUID().uuidString,
-                        uin: commentUin(comment) ?? actorUin,
-                        nickname: commentNickname(comment) ?? actorName,
-                        content: commentContent(comment),
-                        createdAt: commentTime(comment) != 0 ? commentTime(comment) : eventTime,
-                        replies: []
+    ) -> ParsedComment {
+        let value = tryParseJsonText(commentsJSON)
+        let main = jsonPointer(value, "/main_comment")
+        let commentID = textAt(main, "/commentid")
+        let mainUin = textAt(main, "/user/uin")
+        let mainName = textAt(main, "/user/nickname")
+        let mainContent = textAt(main, "/content")
+        let mainTime = asInteger(jsonPointer(main, "/date")) ?? eventTime
+
+        var replies: [ArchivedReply] = []
+        for item in arrayField(main, "/replys") {
+            if let reply = replyFromValue(item) { replies.append(reply) }
+        }
+        if let commentID {
+            for comment in arrayField(value, "/comments")
+            where textAt(comment, "/commentid") == commentID {
+                for item in arrayField(comment, "/replys") {
+                    guard let reply = replyFromValue(item) else { continue }
+                    if !replies.contains(where: { sameReply($0, reply) }) { replies.append(reply) }
+                }
+            }
+        }
+
+        // 回复通知把被回复的主评论放在 main_comment, 真正的回复正文与作者放在互动记录上;
+        // 当主评论作者再次回复时, 回复对象取此前最后一条来自对端的回复
+        let isReplyNotification =
+            (asInteger(jsonPointer(main, "/replynum")) ?? 0) > 0
+            && mainUin != nil
+            && actorUin != nil
+            && mainContent != eventSummary
+            && eventTime > mainTime
+        if isReplyNotification, let content = eventSummary {
+            let duplicate = replies.contains { $0.uin == actorUin && $0.content == content }
+            if !duplicate {
+                var target: ArchivedReply?
+                for reply in replies {
+                    if reply.uin == actorUin || reply.createdAt > eventTime { continue }
+                    if target == nil || reply.createdAt >= target!.createdAt { target = reply }
+                }
+                replies.append(
+                    ArchivedReply(
+                        uin: actorUin,
+                        nickname: actorName,
+                        replyToUin: target?.uin ?? mainUin,
+                        replyToNickname: target?.nickname ?? mainName,
+                        content: content,
+                        createdAt: eventTime
                     )
                 )
             }
-            if !result.isEmpty { return result }
         }
-        if let eventSummary, !eventSummary.isEmpty {
-            result.append(
-                ParsedComment(
-                    id: UUID().uuidString,
-                    uin: actorUin,
-                    nickname: actorName,
-                    content: eventSummary,
-                    createdAt: eventTime,
-                    replies: []
-                )
-            )
+
+        let comment = ParsedComment(
+            id: "",
+            uin: mainUin ?? actorUin,
+            nickname: mainName ?? actorName,
+            content: mainContent ?? eventSummary ?? "评论了这条动态",
+            createdAt: mainTime,
+            replies: sortReplies(replies),
+            commentID: commentID
+        )
+        return comment.withStableID()
+    }
+
+    /// 合并同一原动态下的多条评论, 与 Rust 版 merge_comments 对应
+    static func mergeComments(_ comments: [ParsedComment]) -> [ParsedComment] {
+        var merged: [ParsedComment] = []
+        for comment in comments {
+            if let index = merged.firstIndex(where: { candidate in
+                (comment.commentID != nil && candidate.commentID == comment.commentID)
+                    || (candidate.uin == comment.uin
+                        && candidate.content == comment.content
+                        && candidate.createdAt == comment.createdAt)
+            }) {
+                for reply in comment.replies
+                where !merged[index].replies.contains(where: { sameReply($0, reply) }) {
+                    merged[index].replies.append(reply)
+                }
+                merged[index].replies = sortReplies(merged[index].replies)
+                continue
+            }
+            var copy = comment
+            copy.replies = sortReplies(copy.replies)
+            merged.append(copy)
         }
-        return result
+        return merged
+    }
+
+    /// 稳定排序, 与 Rust 的 sort_by_key 一致
+    static func sortReplies(_ replies: [ArchivedReply]) -> [ArchivedReply] {
+        replies.enumerated()
+            .sorted { left, right in
+                if left.element.createdAt == right.element.createdAt { return left.offset < right.offset }
+                return left.element.createdAt < right.element.createdAt
+            }
+            .map(\.element)
+    }
+
+    /// 评论的稳定标识: 有 commentid 用 commentid, 否则用 uin/时间/正文的 FNV 哈希
+    static func commentStableID(commentID: String?, uin: String?, createdAt: Int, content: String) -> String {
+        if let commentID, !commentID.isEmpty { return "c-\(commentID)" }
+        let digest = formatFeedHash(stableFeedHash([uin ?? "", String(createdAt), content]))
+        return "c-\(digest)"
     }
 
     // MARK: - 媒体地址
 
     /// 逐张图片的首选地址, 对应桌面端 pictureUrls
     static func pictureURLs(_ json: String?) -> [String] {
-        guard let json = json, let root = tryParseJsonText(json),
-              let pictures = jsonPointer(root, "/picdata/pic") as? [Any] else { return [] }
-        return pictures.compactMap { pictureCandidates($0).first }
+        pictureUrlCandidates(json).compactMap { $0.first }
     }
 
-    /// 单张图片的候选地址, 对应桌面端 pictureUrlCandidates (保序去重, 过滤空串)
+    /// 每张图片的候选地址, 对应桌面端 pictureUrlCandidates
+    ///
+    /// 缺少 photourl 字段的图片不进入结果, 候选为空的图片同样跳过 (与原版 push 条件一致)
     static func pictureUrlCandidates(_ json: String?) -> [[String]] {
-        guard let json = json, let root = tryParseJsonText(json),
+        guard let root = tryParseJsonText(json),
               let pictures = jsonPointer(root, "/picdata/pic") as? [Any] else { return [] }
-        return pictures.map { pictureCandidates($0) }
+        var result: [[String]] = []
+        for picture in pictures {
+            guard let object = picture as? [String: Any], object["photourl"] != nil else { continue }
+            let candidates = pictureCandidates(picture)
+            if !candidates.isEmpty { result.append(candidates) }
+        }
+        return result
     }
 
-    /// 单张图片的候选地址 (顺序保留, 去重, 空串过滤)
+    /// 单张图片的候选地址: photourl 各项的 url, 再补 busi_param 的 -1 项
+    ///
+    /// 以双斜杠开头的地址补全协议, 组内按补全后的地址去重 (与原版 seen 的键一致)
     static func pictureCandidates(_ picture: Any) -> [String] {
         var candidates: [String] = []
         let photoURL = jsonPointer(picture, "/photourl")
@@ -364,9 +428,9 @@ enum FeedParser {
         var seen = Set<String>()
         var result: [String] = []
         for candidate in candidates where !candidate.isEmpty {
-            guard !seen.contains(candidate) else { continue }
-            seen.insert(candidate)
-            result.append(candidate.hasPrefix("//") ? "https:" + candidate : candidate)
+            let url = candidate.hasPrefix("//") ? "https:" + candidate : candidate
+            guard seen.insert(url).inserted else { continue }
+            result.append(url)
         }
         return result
     }
@@ -533,9 +597,23 @@ struct ParsedComment {
     var content: String
     var createdAt: Int
     var replies: [ArchivedReply]
+    /// 原版 commentId, 仅用于聚合去重, 不进入输出
+    var commentID: String? = nil
 }
 
 extension ParsedComment {
+    /// 按原版规则生成稳定标识 (commentid 优先, 否则三元组哈希)
+    func withStableID() -> ParsedComment {
+        var copy = self
+        copy.id = FeedParser.commentStableID(
+            commentID: commentID,
+            uin: uin,
+            createdAt: createdAt,
+            content: content
+        )
+        return copy
+    }
+
     /// 转为归档评论模型
     func toArchived(postID: String) -> ArchivedComment {
         ArchivedComment(

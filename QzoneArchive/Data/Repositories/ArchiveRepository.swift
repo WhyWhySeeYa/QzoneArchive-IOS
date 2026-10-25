@@ -15,6 +15,7 @@ protocol ArchiveRepository {
     func deleteAccount(uin: String) throws
 
     func savePosts(_ posts: [ArchivePost], account: Account) throws -> Int
+    func saveFeedPage(_ feeds: [[String: Any]], account: Account) throws -> Int
     func listPosts(
         account: Account,
         category: ArchiveCategory,
@@ -160,91 +161,255 @@ final class SQLiteArchiveRepository: ArchiveRepository {
         return try self.database.inTransaction {
             var saved = 0
             for post in posts {
-                let changes = try self.database.executeUpdate(
-                    """
-                    INSERT INTO archive_posts
-                     (account_id, source_id, author_uin, author_name, content_text, published_at,
-                      archived_at, post_type, source_url, raw_payload_path, is_deleted,
-                      picture_urls_json, video_urls_json, video_cover_url, like_count, comment_count,
-                      category, created_at, updated_at)
-                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-                    ON CONFLICT(account_id, source_id) DO UPDATE SET
-                      author_uin=excluded.author_uin, author_name=excluded.author_name,
-                      content_text=excluded.content_text, published_at=excluded.published_at,
-                      archived_at=excluded.archived_at, post_type=excluded.post_type,
-                      source_url=excluded.source_url, raw_payload_path=excluded.raw_payload_path,
-                      picture_urls_json=excluded.picture_urls_json,
-                      video_urls_json=excluded.video_urls_json,
-                      video_cover_url=excluded.video_cover_url,
-                      like_count=excluded.like_count, comment_count=excluded.comment_count,
-                      category=excluded.category, updated_at=excluded.updated_at
-                    """,
-                    arguments: [
-                        account.qqUin, post.sourceID, post.authorUin, post.authorName,
-                        post.contentText, post.publishedAt, post.archivedAt, post.postType,
-                        post.sourceURL, post.rawPayloadPath, post.isDeleted ? 1 : 0,
-                        try Self.jsonText(post.pictureURLs), try Self.jsonText(post.videoURLs),
-                        post.videoCoverURL, post.likeCount, post.commentCount,
-                        post.category.raw, post.archivedAt, Date(),
-                    ]
+                saved += try self.upsertPost(post, account: account)
+                try self.saveLikes(account: account, post: post)
+                try self.saveComments(account: account, post: post)
+                try self.updateInteractionCounts(
+                    account: account,
+                    cellID: post.sourceID,
+                    likeCount: post.likes.count,
+                    commentCount: post.comments.count
                 )
-                saved += changes
-                if post.likeCount > 0 || !post.likes.isEmpty {
-                    try saveLikes(account: account, post: post)
-                }
-                if post.commentCount > 0 || !post.comments.isEmpty {
-                    try saveComments(account: account, post: post)
-                }
             }
             return saved
         }
     }
 
-    private func saveLikes(account: Account, post: ArchivePost) throws {
-        for like in post.likes {
+    /// 写入一页原始互动记录, 再由记录派生动态、评论、点赞与计数
+    ///
+    /// 与桌面端 savePage 对应: 原始记录按 feed_key 唯一落库, 动态与互动都是派生结果,
+    /// 因此重复归档同一页既不会重复评论也不会重复点赞, 计数始终等于记录条数
+    func saveFeedPage(_ feeds: [[String: Any]], account: Account) throws -> Int {
+        guard !feeds.isEmpty else { return 0 }
+        return try self.database.inTransaction {
+            var touched: [String] = []
+            var seen = Set<String>()
+            for feed in feeds {
+                let parsed = FeedParser.parseFeed(feed)
+                let dynamic = FeedParser.parseOriginalDynamic(feed, ownerUin: account.qqUin)
+                let cellID = dynamic?.cellID ?? (parsed.cellID.isEmpty ? nil : parsed.cellID)
+                let raw = FeedParser.stableJSON(feed) ?? "{}"
+                _ = try self.database.executeUpdate(
+                    """
+                    INSERT INTO archive_feed_records
+                     (account_id, feed_key, cell_id, event_type, event_time, event_summary,
+                      actor_uin, actor_name, original_author_uin, original_author_name,
+                      picture_count, pictures_json, video_json, comments_json, raw_json, archived_at)
+                    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    ON CONFLICT(account_id, feed_key) DO UPDATE SET
+                      cell_id=excluded.cell_id, event_type=excluded.event_type,
+                      event_time=excluded.event_time, event_summary=excluded.event_summary,
+                      actor_uin=excluded.actor_uin, actor_name=excluded.actor_name,
+                      original_author_uin=excluded.original_author_uin,
+                      original_author_name=excluded.original_author_name,
+                      picture_count=excluded.picture_count, pictures_json=excluded.pictures_json,
+                      video_json=excluded.video_json, comments_json=excluded.comments_json,
+                      raw_json=excluded.raw_json, archived_at=excluded.archived_at
+                    """,
+                    arguments: [
+                        account.qqUin, parsed.feedKey, cellID, parsed.eventType, parsed.eventTime,
+                        parsed.eventSummary, parsed.actorUin, parsed.actorName,
+                        dynamic?.authorUin, dynamic?.authorName, dynamic?.pictureCount ?? 0,
+                        dynamic?.picturesJSON, dynamic?.videoJSON, parsed.commentsJSON,
+                        raw, Date(),
+                    ]
+                )
+                if let cellID, seen.insert(cellID).inserted { touched.append(cellID) }
+            }
+
+            let posts = FeedParser.parsePosts(feeds, account: account)
+            for post in posts {
+                _ = try self.upsertPost(post, account: account)
+            }
+            for cellID in touched {
+                try self.rebuildInteractions(account: account, cellID: cellID)
+            }
+            return feeds.count
+        }
+    }
+
+    /// 单条动态 upsert, 冲突时图片与视频保留库中已有的非空值
+    private func upsertPost(_ post: ArchivePost, account: Account) throws -> Int {
+        try self.database.executeUpdate(
+            """
+            INSERT INTO archive_posts
+             (account_id, source_id, author_uin, author_name, content_text, published_at,
+              archived_at, post_type, source_url, raw_payload_path, is_deleted,
+              picture_urls_json, video_urls_json, video_cover_url, like_count, comment_count,
+              category, created_at, updated_at)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(account_id, source_id) DO UPDATE SET
+              author_uin=COALESCE(excluded.author_uin, archive_posts.author_uin),
+              author_name=COALESCE(excluded.author_name, archive_posts.author_name),
+              content_text=COALESCE(NULLIF(excluded.content_text,''), archive_posts.content_text),
+              published_at=CASE WHEN excluded.published_at > 0
+                                THEN excluded.published_at ELSE archive_posts.published_at END,
+              archived_at=excluded.archived_at,
+              post_type=COALESCE(excluded.post_type, archive_posts.post_type),
+              source_url=COALESCE(excluded.source_url, archive_posts.source_url),
+              raw_payload_path=COALESCE(excluded.raw_payload_path, archive_posts.raw_payload_path),
+              picture_urls_json=COALESCE(NULLIF(excluded.picture_urls_json,'[]'),
+                                         archive_posts.picture_urls_json),
+              video_urls_json=COALESCE(NULLIF(excluded.video_urls_json,'[]'),
+                                       archive_posts.video_urls_json),
+              video_cover_url=COALESCE(excluded.video_cover_url, archive_posts.video_cover_url),
+              category=excluded.category, updated_at=excluded.updated_at
+            """,
+            arguments: [
+                account.qqUin, post.sourceID, post.authorUin, post.authorName,
+                post.contentText, post.publishedAt, post.archivedAt, post.postType,
+                post.sourceURL, post.rawPayloadPath, post.isDeleted ? 1 : 0,
+                try Self.jsonText(post.pictureURLs), try Self.jsonText(post.videoURLs),
+                post.videoCoverURL, post.likeCount, post.commentCount,
+                post.category.raw, post.archivedAt, Date(),
+            ]
+        )
+    }
+
+    /// 按原始互动记录重建某条动态的评论、点赞与计数 (与原版查询语义一致)
+    private func rebuildInteractions(account: Account, cellID: String) throws {
+        let commentRows = try self.database.executeQuery(
+            """
+            SELECT comments_json, actor_uin, actor_name, event_summary, event_time
+            FROM archive_feed_records
+            WHERE account_id=? AND cell_id=? AND event_type IN (?,?)
+            ORDER BY event_time ASC, id ASC
+            """,
+            arguments: [account.qqUin, cellID, FeedParser.eventTypeComment, FeedParser.eventTypeCommentAlt]
+        )
+        var parsedComments: [ParsedComment] = []
+        for row in commentRows {
+            parsedComments.append(
+                FeedParser.commentFromValues(
+                    commentsJSON: row["comments_json"] as? String,
+                    actorUin: row["actor_uin"] as? String,
+                    actorName: row["actor_name"] as? String,
+                    eventSummary: row["event_summary"] as? String,
+                    eventTime: Self.int(row["event_time"])
+                )
+            )
+        }
+        let merged = FeedParser.mergeComments(parsedComments)
+        let likeRows = try self.database.executeQuery(
+            """
+            SELECT feed_key, actor_uin, actor_name FROM archive_feed_records
+            WHERE account_id=? AND cell_id=? AND event_type=?
+            ORDER BY event_time ASC, id ASC
+            """,
+            arguments: [account.qqUin, cellID, FeedParser.eventTypeLike]
+        )
+
+        _ = try self.database.executeUpdate(
+            "DELETE FROM comments WHERE account_id=? AND post_id=?",
+            arguments: [account.qqUin, cellID]
+        )
+        _ = try self.database.executeUpdate(
+            "DELETE FROM likes WHERE account_id=? AND post_id=?",
+            arguments: [account.qqUin, cellID]
+        )
+        for comment in merged {
+            let archived = comment.toArchived(postID: cellID)
+            try self.insertComment(account: account, postID: cellID, comment: archived)
+        }
+        for (index, row) in likeRows.enumerated() {
+            let uin = row["actor_uin"] as? String
+            let nickname = row["actor_name"] as? String
+            // 与原版一致: 点赞按记录条数计, 同一人多次点赞保留多条记录
+            let feedKey = row["feed_key"] as? String ?? "like-\(index)"
+            let id = Self.rowID(parts: [account.qqUin, cellID, feedKey])
             _ = try self.database.executeUpdate(
                 """
-                INSERT OR IGNORE INTO likes (id, account_id, post_id, author_uin, author_name, created_at)
+                INSERT INTO likes (id, account_id, post_id, author_uin, author_name, created_at)
                 VALUES (?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET author_name=excluded.author_name
                 """,
-                arguments: [
-                    UUID().uuidString, account.qqUin, post.sourceID,
-                    like.uin, like.nickname, Date(),
-                ]
+                arguments: [id, account.qqUin, cellID, uin, nickname, Date()]
+            )
+        }
+        try self.updateInteractionCounts(
+            account: account,
+            cellID: cellID,
+            likeCount: likeRows.count,
+            commentCount: commentRows.count
+        )
+    }
+
+    /// 计数与桌面端 SQL 的 COUNT(*) 一致: 评论数按互动记录条数, 不是合并后的评论条数
+    private func updateInteractionCounts(
+        account: Account,
+        cellID: String,
+        likeCount: Int,
+        commentCount: Int
+    ) throws {
+        _ = try self.database.executeUpdate(
+            "UPDATE archive_posts SET like_count=?, comment_count=?, updated_at=? WHERE account_id=? AND source_id=?",
+            arguments: [likeCount, commentCount, Date(), account.qqUin, cellID]
+        )
+    }
+
+    private func saveLikes(account: Account, post: ArchivePost) throws {
+        for (index, like) in post.likes.enumerated() {
+            let id = Self.rowID(parts: [account.qqUin, post.sourceID, like.uin ?? "like-\(index)"])
+            _ = try self.database.executeUpdate(
+                """
+                INSERT INTO likes (id, account_id, post_id, author_uin, author_name, created_at)
+                VALUES (?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET author_name=excluded.author_name
+                """,
+                arguments: [id, account.qqUin, post.sourceID, like.uin, like.nickname, Date()]
             )
         }
     }
 
     private func saveComments(account: Account, post: ArchivePost) throws {
         for comment in post.comments {
+            try self.insertComment(account: account, postID: post.sourceID, comment: comment)
+        }
+    }
+
+    /// 评论与回复的写入, 主键由 (账号, 动态, 评论标识) 稳定推导, 重复归档只更新不新增
+    private func insertComment(account: Account, postID: String, comment: ArchivedComment) throws {
+        let baseID = Self.rowID(parts: [account.qqUin, postID, comment.id])
+        _ = try self.database.executeUpdate(
+            """
+            INSERT INTO comments
+             (id, account_id, post_id, parent_id, author_uin, author_name, content_text, published_at, created_at)
+            VALUES (?,?,?,?,?,?,?,?,?)
+            ON CONFLICT(id) DO UPDATE SET
+              author_uin=excluded.author_uin, author_name=excluded.author_name,
+              content_text=excluded.content_text, published_at=excluded.published_at
+            """,
+            arguments: [
+                baseID, account.qqUin, postID, comment.parentID,
+                comment.authorUin, comment.authorName, comment.contentText,
+                comment.publishedAt, comment.createdAt,
+            ]
+        )
+        for reply in comment.replies {
+            let replyID = Self.rowID(parts: [
+                baseID, reply.uin ?? "", String(reply.createdAt), reply.content,
+            ])
             _ = try self.database.executeUpdate(
                 """
-                INSERT OR REPLACE INTO comments
+                INSERT INTO comments
                  (id, account_id, post_id, parent_id, author_uin, author_name, content_text, published_at, created_at)
                 VALUES (?,?,?,?,?,?,?,?,?)
+                ON CONFLICT(id) DO UPDATE SET
+                  author_uin=excluded.author_uin, author_name=excluded.author_name,
+                  content_text=excluded.content_text, published_at=excluded.published_at
                 """,
                 arguments: [
-                    comment.id, account.qqUin, post.sourceID, comment.parentID,
-                    comment.authorUin, comment.authorName, comment.contentText,
-                    comment.publishedAt, comment.createdAt,
+                    replyID, account.qqUin, postID, baseID,
+                    reply.uin, reply.nickname, reply.content,
+                    Date(timeIntervalSince1970: TimeInterval(reply.createdAt)), Date(),
                 ]
             )
-            for reply in comment.replies {
-                _ = try self.database.executeUpdate(
-                    """
-                    INSERT OR REPLACE INTO comments
-                     (id, account_id, post_id, parent_id, author_uin, author_name, content_text, published_at, created_at)
-                    VALUES (?,?,?,?,?,?,?,?,?)
-                    """,
-                    arguments: [
-                        "\(comment.id)-reply-\(reply.createdAt)-\(reply.uin ?? "")",
-                        account.qqUin, post.sourceID, comment.id,
-                        reply.uin, reply.nickname, reply.content,
-                        Date(timeIntervalSince1970: TimeInterval(reply.createdAt)), Date(),
-                    ]
-                )
-            }
         }
+    }
+
+    /// 稳定行标识: 由若干字段拼接后取 FNV-1a 十六进制, 同一输入始终得到同一主键
+    static func rowID(parts: [String]) -> String {
+        FeedParser.formatFeedHash(FeedParser.stableFeedHash(parts))
     }
 
     func listPosts(account: Account, category: ArchiveCategory, limit: Int, offset: Int) throws -> [ArchivePost] {
@@ -293,6 +458,10 @@ final class SQLiteArchiveRepository: ArchiveRepository {
                     "DELETE FROM media_assets WHERE account_id=? AND post_id=(SELECT source_id FROM archive_posts WHERE account_id=? AND id=?)",
                     arguments: [account.qqUin, account.qqUin, id]
                 )
+                _ = try self.database.executeUpdate(
+                    "DELETE FROM archive_feed_records WHERE account_id=? AND cell_id=(SELECT source_id FROM archive_posts WHERE account_id=? AND id=?)",
+                    arguments: [account.qqUin, account.qqUin, id]
+                )
                 count += try self.database.executeUpdate(
                     "DELETE FROM archive_posts WHERE account_id=? AND id=?",
                     arguments: [account.qqUin, id]
@@ -310,6 +479,7 @@ final class SQLiteArchiveRepository: ArchiveRepository {
             )
             _ = try self.database.executeUpdate("DELETE FROM comments WHERE account_id=?", arguments: [account.qqUin])
             _ = try self.database.executeUpdate("DELETE FROM likes WHERE account_id=?", arguments: [account.qqUin])
+            _ = try self.database.executeUpdate("DELETE FROM archive_feed_records WHERE account_id=?", arguments: [account.qqUin])
             _ = try self.database.executeUpdate("DELETE FROM media_assets WHERE account_id=?", arguments: [account.qqUin])
             _ = try self.database.executeUpdate("DELETE FROM archive_checkpoints WHERE account_id=?", arguments: [account.qqUin])
             _ = try self.database.executeUpdate("DELETE FROM archive_rate_limits WHERE account_id=?", arguments: [account.qqUin])

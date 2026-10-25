@@ -251,14 +251,26 @@ final class FeedParserTests: XCTestCase {
     }
 
     func testParsePostsSeparatesLikesAndComments() {
-        // 点赞/评论记录与原动态共用同一个 cell_id (线上即如此)
+        // 点赞/评论记录与原动态共用同一个 cell_id (线上即如此), 评论正文取自 main_comment
         let like = rawFeed(eventType: 217, cellID: "cell-main", actorUin: "999", actorName: "点赞人")
         let comment = rawFeed(
             eventType: 2,
             cellID: "cell-main",
             actorUin: "888",
             actorName: "评论人",
-            comments: ["comments": [["comment": "你好", "uin": "888", "nickname": "评论人", "time": 1_700_000_100]]]
+            comments: [
+                "main_comment": [
+                    "commentid": "c1",
+                    "user": ["uin": "888", "nickname": "评论人"],
+                    "content": "你好",
+                    "date": 1_700_000_100,
+                    "replys": [[
+                        "content": "谢谢",
+                        "user": ["uin": ownerUin, "nickname": "我自己"],
+                        "date": 1_700_000_200,
+                    ]],
+                ],
+            ]
         )
         let dynamic = rawFeed(eventType: 1, cellID: "cell-main")
         let posts = FeedParser.parsePosts([like, comment, dynamic], account: account)
@@ -267,6 +279,95 @@ final class FeedParserTests: XCTestCase {
         }
         XCTAssertEqual(post.likeCount, 1)
         XCTAssertEqual(post.likes.first?.uin, "999")
-        XCTAssertTrue(post.comments.contains { $0.contentText == "你好" })
+        XCTAssertEqual(post.commentCount, 1)
+        XCTAssertEqual(post.comments.first?.contentText, "你好")
+        XCTAssertEqual(post.comments.first?.authorUin, "888")
+        XCTAssertEqual(post.comments.first?.replies.count, 1)
+        XCTAssertEqual(post.comments.first?.replies.first?.content, "谢谢")
+    }
+
+    // MARK: - 评论解析 (对应 archiveParser.ts commentFromValues / mergeComments)
+
+    func testCommentFallsBackToEventSummary() {
+        // main_comment 缺失时正文取互动摘要, 与原版 "评论了这条动态" 兜底链一致
+        let feed = rawFeed(eventType: 2, cellID: "cell-x", eventSummary: "评论了这条动态")
+        let comment = FeedParser.commentFromValues(
+            commentsJSON: nil,
+            actorUin: "888",
+            actorName: "评论人",
+            eventSummary: "评论了这条动态",
+            eventTime: 1_700_000_100
+        )
+        XCTAssertEqual(comment.content, "评论了这条动态")
+        XCTAssertEqual(comment.uin, "888")
+        XCTAssertEqual(comment.createdAt, 1_700_000_100)
+        XCTAssertTrue(FeedParser.parsePosts([feed], account: account).isEmpty, "无 cellid 时不应产生动态")
+    }
+
+    func testCommentReplyNotificationAppended() {
+        // 回复通知: main_comment 是被回复的那条, 真正的回复正文在互动记录摘要里
+        let json = """
+        {"main_comment":{"commentid":"c1","user":{"uin":"20002","nickname":"好友"},
+        "content":"写得不错","date":1700000100,"replynum":1,
+        "replys":[{"content":"谢谢","user":{"uin":"10001","nickname":"我"},"date":1700000200}]}}
+        """
+        let comment = FeedParser.commentFromValues(
+            commentsJSON: json,
+            actorUin: "30003",
+            actorName: "路人",
+            eventSummary: "回复了你：同感",
+            eventTime: 1_700_000_300
+        )
+        XCTAssertEqual(comment.content, "写得不错")
+        XCTAssertEqual(comment.replies.count, 2, "回复通知应补一条回复")
+        XCTAssertEqual(comment.replies.last?.content, "回复了你：同感")
+        XCTAssertEqual(comment.replies.last?.uin, "30003")
+        XCTAssertEqual(comment.replies.last?.replyToUin, "10001", "回复对象取时间最近的回复作者")
+    }
+
+    func testMergeCommentsDedupesByCommentID() {
+        let first = ParsedComment(
+            id: "a", uin: "20002", nickname: "好友", content: "写得不错", createdAt: 1_700_000_100,
+            replies: [ArchivedReply(uin: "10001", nickname: "我", replyToUin: nil,
+                                    replyToNickname: nil, content: "谢谢", createdAt: 1_700_000_200)],
+            commentID: "c1"
+        )
+        let second = ParsedComment(
+            id: "b", uin: "20002", nickname: "好友", content: "写得不错", createdAt: 1_700_000_100,
+            replies: [ArchivedReply(uin: "30003", nickname: "路人", replyToUin: nil,
+                                    replyToNickname: nil, content: "同感", createdAt: 1_700_000_300)],
+            commentID: "c1"
+        )
+        let merged = FeedParser.mergeComments([first, second])
+        XCTAssertEqual(merged.count, 1, "同一 commentid 只保留一条评论")
+        XCTAssertEqual(merged.first?.replies.count, 2)
+        XCTAssertEqual(merged.first?.replies.map(\.content), ["谢谢", "同感"], "回复按时间稳定排序")
+    }
+
+    func testPictureCandidatesSkipMissingPhotoURL() {
+        let pictures: [[String: Any]] = [
+            ["photourl": [["url": "https://img.example/a.jpg"]]],
+            ["busi_param": ["-1": "https://img.example/b.jpg"]],
+            ["photourl": [["url": "//img.example/c.jpg"], ["url": "https://img.example/c.jpg"]]],
+        ]
+        let json = String(
+            data: try! JSONSerialization.data(withJSONObject: ["picdata": ["pic": pictures]]),
+            encoding: .utf8
+        )
+        let candidates = FeedParser.pictureUrlCandidates(json)
+        XCTAssertEqual(candidates.count, 2, "缺少 photourl 的图片不进入候选")
+        XCTAssertEqual(candidates[0], ["https://img.example/a.jpg"])
+        XCTAssertEqual(candidates[1], ["https://img.example/c.jpg"], "补全协议后去重")
+        XCTAssertEqual(FeedParser.pictureURLs(json), ["https://img.example/a.jpg", "https://img.example/c.jpg"])
+    }
+
+    func testCommentFeedAloneCreatesDynamic() {
+        // 原版对每条互动记录都执行 save_original_dynamic, 只有评论通知时也会归档出动态
+        let comment = rawFeed(eventType: 2, cellID: "cell-only", content: "只有评论通知的动态")
+        let posts = FeedParser.parsePosts([comment], account: account)
+        XCTAssertEqual(posts.count, 1)
+        XCTAssertEqual(posts.first?.sourceID, "cell-only")
+        XCTAssertEqual(posts.first?.contentText, "只有评论通知的动态")
+        XCTAssertEqual(posts.first?.commentCount, 1)
     }
 }

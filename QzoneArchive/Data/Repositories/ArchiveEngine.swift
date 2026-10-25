@@ -111,12 +111,10 @@ actor ArchiveEngine {
         progress.startedAt()
 
         var cursor: String?
-        var resetCheckpointStats = false
 
         if let checkpoint = try? repository.loadCheckpoint(account: account) {
             if Date().timeIntervalSince(checkpoint.updatedAt) > Self.rateWindowSeconds {
                 try? repository.clearCheckpoint(account: account)
-                resetCheckpointStats = true
             } else {
                 cursor = checkpoint.attachInfo
                 progress.pages = checkpoint.pages
@@ -124,78 +122,92 @@ actor ArchiveEngine {
                 progress.saved = checkpoint.saved
                 progress.message = "从上次中断的位置继续归档"
             }
-        } else {
-            resetCheckpointStats = true
         }
 
         var refreshType: FeedRefreshType = cursor == nil ? .firstPage : .normal
         var attachInfo: String? = cursor
         var seenCursors: Set<String> = []
+        if let cursor, !cursor.isEmpty { seenCursors.insert(cursor) }
+        progress.skipped = (try? repository.listPendingSkipIDs(account: account).count) ?? 0
 
         while progress.status == .running {
             try Task.checkCancellation()
             if isCancelled { break }
-            if let attachInfo, !attachInfo.isEmpty {
-                if seenCursors.contains(attachInfo) {
-                    progress.status = .completed
-                    progress.message = "已到最后一页"
-                    break
-                }
-                seenCursors.insert(attachInfo)
-            }
 
-            // 频率保护
-            if try await enforceRateLimit(account: account) == false {
+            // 频率保护: 原版在每次取页前 reservePage, 首页同样计入
+            guard try await enforceRateLimit(account: account) else {
                 progress.status = .paused
                 return progress
             }
 
             let page: QzoneFeedPage
-            let attemptDelay: Int
+            var skipped: (cursor: String, offsetAdvance: Int)?
             do {
-                (page, attemptDelay) = try await fetchPageWithFirstPageRetry(
-                    refreshType: refreshType,
-                    attachInfo: attachInfo
-                )
+                if refreshType == .firstPage {
+                    page = try await fetchFirstPage()
+                } else {
+                    let result = try await fetchCursorPage(account: account, cursor: attachInfo)
+                    page = result.page
+                    skipped = result.skipped
+                }
             } catch let error as QzoneError {
-                if error.isAuthError {
-                    progress.status = .failed
-                    progress.message = error.localizedDescription
-                    return progress
-                }
-                if let result = try await handlePageError(
-                    account: account,
-                    error: error,
-                    attachInfo: attachInfo,
-                    pageNumber: progress.pages + 1
-                ) {
-                    attachInfo = result.cursor
-                    refreshType = .normal
-                    continue
-                }
                 progress.status = .failed
                 progress.message = error.localizedDescription
                 return progress
             }
-            if attemptDelay > 0 {
-                progress.message = "接口暂时不可用，正在重试"
+
+            // 原版: hasMore 必须带回游标, 重复游标视为死循环
+            var next: String?
+            if page.hasMore {
+                guard let attach = page.attachInfo, !attach.isEmpty else {
+                    progress.status = .failed
+                    progress.message = "接口表示还有数据，但未返回分页游标"
+                    return progress
+                }
+                next = attach
+            }
+            if let next {
+                guard !seenCursors.contains(next) else {
+                    progress.status = .failed
+                    progress.message = "检测到重复分页游标，已停止以避免死循环"
+                    return progress
+                }
+                seenCursors.insert(next)
+            }
+            if let skipped {
+                let details = try? FeedCursor.parse(skipped.cursor)
+                try? repository.recordSkip(
+                    account: account,
+                    pageNumber: progress.pages + 1,
+                    cursorOffset: details?.offset ?? 0,
+                    offsetAdvance: skipped.offsetAdvance,
+                    baseTime: details?.baseTime ?? 0,
+                    error: "已跳过异常位置",
+                    cursor: skipped.cursor
+                )
             }
 
+            // 原始记录按 feed_key 落库, 动态与互动由记录派生, 重复归档不会重复计数
+            let saved = try repository.saveFeedPage(page.feeds, account: account)
             let posts = FeedParser.parsePosts(page.feeds, account: account)
-            let saved = try repository.savePosts(posts, account: account)
             progress.pages += 1
             progress.fetched += page.feeds.count
             progress.saved += saved
-            progress.message = "已归档 \(progress.saved) 条"
+            progress.skipped = (try? repository.listPendingSkipIDs(account: account).count) ?? progress.skipped
+            progress.message = skipped != nil
+                ? "已跳过 1 个异常位置并继续归档；当前 \(progress.pages) 页，共 \(progress.fetched) 条记录"
+                : "已归档 \(progress.pages) 页，共 \(progress.fetched) 条记录"
 
-            if !page.hasMore || page.attachInfo == nil {
+            if !page.hasMore {
                 progress.status = .completed
-                progress.message = "归档完成，共 \(progress.saved) 条"
+                progress.message = progress.skipped > 0
+                    ? "归档完成，共保存 \(progress.saved) 条记录；另有 \(progress.skipped) 个异常位置已跳过，可在下方单独重试"
+                    : "归档完成，共保存 \(progress.saved) 条记录"
                 try? repository.clearCheckpoint(account: account)
                 return progress
             }
 
-            let nextCursor = page.attachInfo ?? ""
+            let nextCursor = next ?? ""
             try repository.saveCheckpoint(
                 account: account,
                 attachInfo: nextCursor,
@@ -248,18 +260,6 @@ actor ArchiveEngine {
         _ = try await startArchive(account: account, settings: settings)
     }
 
-    /// 暂停归档
-    func pause() {
-        progress.status = .paused
-        progress.message = "已暂停，进度已保存"
-    }
-
-    /// 恢复归档
-    func resume() {
-        progress.status = .running
-        progress.message = "继续归档"
-    }
-
     // MARK: - 内部流程
 
     /// 频率保护: 窗口内超过页数上限时暂停并等待
@@ -267,13 +267,13 @@ actor ArchiveEngine {
         let now = Date()
         var window = try? repository.loadRateWindow(account: account)
         if window == nil || now.timeIntervalSince(window!.startedAt) > Self.rateWindowSeconds {
+            // 新窗口的首个请求同样计入页数
             try? repository.saveRateWindow(
                 account: account,
                 startedAt: now,
-                pages: 0,
+                pages: 1,
                 retryAt: nil
             )
-            window = (now, 0, nil)
             return true
         }
         if window!.pages >= Self.ratePageLimit {
@@ -281,6 +281,7 @@ actor ArchiveEngine {
             try? repository.saveRateWindow(account: account, startedAt: window!.startedAt,
                                             pages: window!.pages, retryAt: retryAt)
             progress.retryAt = retryAt
+            progress.status = .paused
             progress.message = "为防止接口请求过于频繁，每 10 分钟最多归档 300 页。达到限制后已安全暂停，倒计时结束即可从当前进度继续归档。"
             return false
         }
@@ -289,75 +290,122 @@ actor ArchiveEngine {
         return true
     }
 
-    /// 首页失败时按固定退避重试
-    private func fetchPageWithFirstPageRetry(
-        refreshType: FeedRefreshType,
-        attachInfo: String?
-    ) async throws -> (page: QzoneFeedPage, waited: Int) {
+    /// 首页请求: 只对可跳过的错误重试, 最多 3 次, 退避 3 秒与 6 秒
+    private func fetchFirstPage() async throws -> QzoneFeedPage {
         var attempt = 1
-        var totalWait = 0
         while true {
             do {
-                let page = try await api.fetchFeeds(refreshType: refreshType, attachInfo: attachInfo)
-                return (page, totalWait)
+                return try await api.fetchFeeds(refreshType: .firstPage, attachInfo: nil)
             } catch {
-                if attempt >= Self.firstPageRetryAttempts { throw error }
+                let message = error.localizedDescription
+                guard Self.feedErrorCanSkip(message) else { throw error }
+                if attempt >= Self.firstPageRetryAttempts {
+                    throw QzoneError.parseFailed("第一页获取空间动态失败（已重试 \(Self.firstPageRetryAttempts) 次）：\(message)")
+                }
+                progress.message = "第一页请求失败（\(message)），\(attempt)/\(Self.firstPageRetryAttempts) 次重试中…"
                 let delay = Self.firstPageRetryDelaysMs[min(attempt - 1, Self.firstPageRetryDelaysMs.count - 1)]
-                totalWait += delay
                 try? await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
                 attempt += 1
             }
         }
     }
 
-    /// 单页错误处理: 能跳过则返回新的游标
-    private func handlePageError(
+    /// 续传页请求: 可跳过的单页错误先登记再探测, 其余错误直接抛出
+    private func fetchCursorPage(
         account: Account,
-        error: QzoneError,
-        attachInfo: String?,
-        pageNumber: Int
-    ) async throws -> (cursor: String, offsetAdvance: Int)? {
-        guard let cursor = attachInfo, !cursor.isEmpty else { return nil }
-        let details: FeedCursorDetails
-        do { details = try FeedCursor.parse(cursor) } catch { return nil }
-
-        // 频率保护类错误直接暂停
-        if case .apiError(let code, let message) = error,
-           code == 1100 || message.contains("操作太频繁") || message.contains("请稍后再试") {
-            let retryAt = Date().addingTimeInterval(10 * 60)
-            try? repository.saveRateWindow(
-                account: account,
-                startedAt: Date(),
-                pages: Self.ratePageLimit,
-                retryAt: retryAt
-            )
-            progress.retryAt = retryAt
-            progress.message = "QQ 空间提示请求过于频繁，已自动暂停。"
-            return nil
+        cursor: String?
+    ) async throws -> (page: QzoneFeedPage, skipped: (cursor: String, offsetAdvance: Int)?) {
+        guard let cursor, !cursor.isEmpty else {
+            throw QzoneError.parseFailed("分页游标不能为空")
         }
+        do {
+            return (try await api.fetchFeeds(refreshType: .normal, attachInfo: cursor), nil)
+        } catch {
+            let message = error.localizedDescription
+            // 原版 feedErrorCanSkip: 只有 5xx / 解析失败 / 接口返回错误才跳过, 鉴权与网络错误直接失败
+            guard Self.feedErrorCanSkip(message) else { throw error }
+            guard let details = try? FeedCursor.parse(cursor) else {
+                throw QzoneError.parseFailed("\(message)；且无法自动跳过该页：分页游标无法解析")
+            }
+            // 先登记待重试位置 (offsetAdvance 0), 探测成功后再更新实际推进量
+            try? repository.recordSkip(
+                account: account,
+                pageNumber: progress.pages + 1,
+                cursorOffset: details.offset,
+                offsetAdvance: 0,
+                baseTime: details.baseTime,
+                error: message,
+                cursor: cursor
+            )
+            progress.skipped = (try? repository.listPendingSkipIDs(account: account).count) ?? progress.skipped
+            progress.message = "第 \(progress.pages + 1) 页发生异常，已加入待重试列表，正在寻找后续可恢复位置…"
+            guard let recovered = try await recoverSkippedPage(account: account, cursor: cursor, error: message) else {
+                throw QzoneError.parseFailed("\(message)；向后探测至偏移 +\(Self.skipMaxOffsetAdvance) 后仍无法取得下一页")
+            }
+            return (recovered.page, (cursor, recovered.offsetAdvance))
+        }
+    }
 
-        // 值得跳过的单页错误: 按偏移序列向前探测
+    /// 跳过异常位置: 按 2 的幂次探测, 再用二分缩小跳过范围
+    private func recoverSkippedPage(
+        account: Account,
+        cursor: String,
+        error: String
+    ) async throws -> (page: QzoneFeedPage, offsetAdvance: Int)? {
+        guard let details = try? FeedCursor.parse(cursor) else { return nil }
         let firstAdvance = max(1, details.loadCount > 0 ? details.loadCount : 10)
+        var best: (page: QzoneFeedPage, offsetAdvance: Int)?
+        var lastFailedAdvance = 0
         for offset in FeedCursor.skipProbeOffsets(firstAdvance: firstAdvance) {
             if isCancelled { return nil }
+            guard try await enforceRateLimit(account: account) else { return nil }
             do {
                 let advanced = try FeedCursor.advance(cursor, offsetAdvance: offset)
-                let page = try await api.fetchFeeds(refreshType: .normal, attachInfo: advanced)
-                try? repository.recordSkip(
-                    account: account,
-                    pageNumber: pageNumber,
-                    cursorOffset: details.offset,
-                    offsetAdvance: offset,
-                    baseTime: details.baseTime,
-                    error: error.localizedDescription,
-                    cursor: cursor
-                )
-                return (advanced, offset)
+                let page = try await api.fetchFeedsOnce(refreshType: .normal, attachInfo: advanced)
+                best = (page, offset)
+                break
             } catch {
-                continue
+                guard Self.feedErrorCanSkip(error.localizedDescription) else { throw error }
+                lastFailedAdvance = offset
             }
         }
-        return nil
+        guard var found = best else { return nil }
+
+        var low = lastFailedAdvance + 1
+        var high = found.offsetAdvance - 1
+        while low <= high {
+            if isCancelled { return nil }
+            let offset = low + (high - low) / 2
+            progress.message = "已找到可恢复位置，正在缩小跳过范围（偏移 +\(offset)）…"
+            guard try await enforceRateLimit(account: account) else { return nil }
+            do {
+                let advanced = try FeedCursor.advance(cursor, offsetAdvance: offset)
+                let page = try await api.fetchFeedsOnce(refreshType: .normal, attachInfo: advanced)
+                found = (page, offset)
+                high = offset - 1
+            } catch {
+                guard Self.feedErrorCanSkip(error.localizedDescription) else { throw error }
+                low = offset + 1
+            }
+        }
+        try? repository.recordSkip(
+            account: account,
+            pageNumber: progress.pages + 1,
+            cursorOffset: details.offset,
+            offsetAdvance: found.offsetAdvance,
+            baseTime: details.baseTime,
+            error: error,
+            cursor: cursor
+        )
+        return found
+    }
+
+    /// 原版 feedErrorCanSkip: 5xx / 解析失败 / 接口返回错误可以跳过, 其余不跳过
+    static func feedErrorCanSkip(_ message: String) -> Bool {
+        message.contains("HTTP 5")
+            || message.contains("解析空间动态失败")
+            || message.contains("QQ 空间接口返回错误")
+            || message.contains("接口返回错误")
     }
 
     /// 每页请求前的等待毫秒数, 叠加亚秒抖动

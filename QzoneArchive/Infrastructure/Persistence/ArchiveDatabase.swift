@@ -195,6 +195,36 @@ final class ArchiveDatabase {
             );
             """,
             """
+            CREATE TABLE IF NOT EXISTS archive_feed_records (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id TEXT NOT NULL,
+                feed_key TEXT NOT NULL,
+                cell_id TEXT,
+                event_type INTEGER NOT NULL DEFAULT 0,
+                event_time INTEGER NOT NULL DEFAULT 0,
+                event_summary TEXT,
+                actor_uin TEXT,
+                actor_name TEXT,
+                original_author_uin TEXT,
+                original_author_name TEXT,
+                picture_count INTEGER NOT NULL DEFAULT 0,
+                pictures_json TEXT,
+                video_json TEXT,
+                comments_json TEXT,
+                raw_json TEXT NOT NULL,
+                archived_at REAL NOT NULL,
+                UNIQUE(account_id, feed_key)
+            );
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_feed_records_cell
+              ON archive_feed_records(account_id, cell_id, event_type);
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS idx_feed_records_account_time
+              ON archive_feed_records(account_id, event_time DESC);
+            """,
+            """
             CREATE TABLE IF NOT EXISTS archive_tasks (
                 id TEXT PRIMARY KEY,
                 account_id TEXT NOT NULL,

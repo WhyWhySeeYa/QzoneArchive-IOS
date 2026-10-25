@@ -207,4 +207,82 @@ final class ArchiveRepositoryTests: XCTestCase {
         XCTAssertEqual(ranking.first?.likes, 1)
         XCTAssertEqual(ranking.first?.comments, 1)
     }
+
+    func testSaveFeedPageIsIdempotent() throws {
+        // 同一页重复归档: 原始记录按 feed_key 去重, 评论/点赞与计数不重复累积
+        let feeds: [[String: Any]] = [
+            [
+                "comm": ["time": 1_700_000_000, "subid": 1],
+                "userinfo": ["user": ["uin": "123456789", "nickname": "测试账号"]],
+                "original": [
+                    "cell_id": ["cellid": "cell-1"],
+                    "cell_comm": ["time": 1_700_000_000, "appid": 311, "feedskey": "feed-1"],
+                    "cell_summary": ["summary": "自己的动态"],
+                    "cell_userinfo": ["user": ["uin": "123456789", "nickname": "测试账号"]],
+                ],
+            ],
+            [
+                "comm": ["time": 1_700_000_100, "subid": 2],
+                "userinfo": ["user": ["uin": "888", "nickname": "评论人"]],
+                "summary": ["summary": "评论了你的动态"],
+                "original": [
+                    "cell_id": ["cellid": "cell-1"],
+                    "cell_comm": ["time": 1_700_000_000, "appid": 311],
+                    "cell_comment": [
+                        "main_comment": [
+                            "commentid": "c1",
+                            "user": ["uin": "888", "nickname": "评论人"],
+                            "content": "你好",
+                            "date": 1_700_000_100,
+                        ],
+                    ],
+                ],
+            ],
+            [
+                "comm": ["time": 1_700_000_200, "subid": 217],
+                "userinfo": ["user": ["uin": "999", "nickname": "点赞人"]],
+                "original": [
+                    "cell_id": ["cellid": "cell-1"],
+                    "cell_comm": ["time": 1_700_000_000, "appid": 311],
+                ],
+            ],
+        ]
+
+        XCTAssertEqual(try repository.saveFeedPage(feeds, account: account), 3)
+        let first = try repository.fetchPost(account: account, id: 1)
+        XCTAssertEqual(first.commentCount, 1)
+        XCTAssertEqual(first.likeCount, 1)
+        XCTAssertEqual(first.comments.count, 1)
+        XCTAssertEqual(first.comments.first?.contentText, "你好")
+
+        XCTAssertEqual(try repository.saveFeedPage(feeds, account: account), 3)
+        let second = try repository.fetchPost(account: account, id: 1)
+        XCTAssertEqual(second.commentCount, 1, "重复归档不应重复计数")
+        XCTAssertEqual(second.likeCount, 1)
+        XCTAssertEqual(second.comments.count, 1, "重复归档不应重复插入评论")
+        XCTAssertEqual(second.likes.count, 1, "重复归档不应重复插入点赞")
+
+        // 分页到达时只带来新评论, 计数应累加而不是被覆盖
+        let moreComment: [String: Any] = [
+            "comm": ["time": 1_700_000_300, "subid": 2],
+            "userinfo": ["user": ["uin": "777", "nickname": "另一位"]],
+            "summary": ["summary": "评论了你的动态"],
+            "original": [
+                "cell_id": ["cellid": "cell-1"],
+                "cell_comm": ["time": 1_700_000_000, "appid": 311],
+                "cell_comment": [
+                    "main_comment": [
+                        "commentid": "c2",
+                        "user": ["uin": "777", "nickname": "另一位"],
+                        "content": "第二条评论",
+                        "date": 1_700_000_300,
+                    ],
+                ],
+            ],
+        ]
+        _ = try repository.saveFeedPage([moreComment], account: account)
+        let third = try repository.fetchPost(account: account, id: 1)
+        XCTAssertEqual(third.commentCount, 2, "后续页面的评论应累加到同一条动态")
+        XCTAssertEqual(third.comments.count, 2)
+    }
 }

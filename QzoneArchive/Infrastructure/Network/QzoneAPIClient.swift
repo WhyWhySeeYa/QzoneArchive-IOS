@@ -32,6 +32,10 @@ struct QzoneFeedCredentials {
 actor QzoneAPIClient {
     /// 互动列表接口地址
     let feedsURL = "https://mobile.qzone.qq.com/get_feeds"
+    /// 请求头中的来源页, 与桌面端 FEED_ORIGIN/FEED_REFERER 一致
+    static let feedOrigin = "https://h5.qzone.qq.com"
+    static let feedReferer = "https://h5.qzone.qq.com/"
+    static let acceptLanguage = "zh-CN,zh;q=0.9,en;q=0.8,en-GB;q=0.7,en-US;q=0.6,zh-TW;q=0.5"
 
     private let session: LoginSession
     private let logger: AppLogger
@@ -157,11 +161,11 @@ actor QzoneAPIClient {
     private func feedHeaders(feedCredentials: QzoneFeedCredentials) -> [String: String] {
         var headers: [String: String] = [
             "Accept": "application/json",
-            "Accept-Language": "zh-CN,zh;q=0.9",
+            "Accept-Language": Self.acceptLanguage,
             "Cache-Control": "no-cache",
             "Pragma": "no-cache",
-            "Origin": "https://mobile.qzone.qq.com",
-            "Referer": "https://mobile.qzone.qq.com/",
+            "Origin": Self.feedOrigin,
+            "Referer": Self.feedReferer,
             "User-Agent": feedCredentials.userAgent,
             "Cookie": feedCredentials.cookieHeader,
             "Sec-Fetch-Dest": "empty",
@@ -263,6 +267,10 @@ actor QzoneAPIClient {
 
     /// 读取动态数组
     static func readFeedRecords(_ data: Any) -> [[String: Any]] {
+        // 原版只读 data.vFeeds; 其余键仅作兼容兜底
+        if let object = data as? [String: Any], let array = object["vFeeds"] as? [[String: Any]] {
+            return array
+        }
         if let array = data as? [[String: Any]] { return array }
         if let object = data as? [String: Any] {
             let keys = ["feeds", "list", "data", "items", "msg_list", "feed_list"]
@@ -279,7 +287,8 @@ actor QzoneAPIClient {
     /// 读取分页游标
     static func readAttachInfo(_ data: Any) -> String? {
         guard let object = data as? [String: Any] else { return nil }
-        let keys = ["attach_info", "attachInfo", "attach", "next_attach"]
+        // 原版精确读取 data.attachinfo, 其余写法仅作兼容兜底
+        let keys = ["attachinfo", "attach_info", "attachInfo", "attach", "next_attach"]
         for key in keys {
             if let string = object[key] as? String, !string.isEmpty { return string }
             if let nested = object[key] as? [String: Any], let string = nested["attach_info"] as? String, !string.isEmpty {
