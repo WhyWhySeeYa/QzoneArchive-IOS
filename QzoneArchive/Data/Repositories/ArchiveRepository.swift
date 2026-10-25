@@ -960,7 +960,8 @@ final class SQLiteArchiveRepository: ArchiveRepository {
         )
         let replyByParent = Dictionary(grouping: replies) { $0["parent_id"] as? String ?? "" }
         var result: [ArchivedComment] = []
-        for row in rows where row["parent_id"] == nil {
+        // SQLite 的 NULL 在行字典里是 NSNull, 不是 nil
+        for row in rows where (row["parent_id"] as? NSNull) != nil || row["parent_id"] == nil {
             let comment = ArchivedComment(
                 id: row["id"] as? String ?? "",
                 postID: sourceID,
