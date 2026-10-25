@@ -258,6 +258,9 @@ final class ArchiveRepositoryTests: XCTestCase {
         for row in dbg { print("DBG row:", row) }
         let dbg2 = try database.executeQuery("SELECT id, account_id, post_id, content_text FROM comments", arguments: [])
         print("DBG comments rows:", dbg2.count, dbg2)
+        let dbg3 = try database.executeQuery("SELECT id, source_id, account_id, comment_count, like_count FROM archive_posts", arguments: [])
+        print("DBG posts:", dbg3)
+        print("DBG first post source:", first.sourceID, "count:", first.commentCount)
         XCTAssertEqual(first.commentCount, 1)
         XCTAssertEqual(first.likeCount, 1)
         XCTAssertEqual(first.comments.count, 1)

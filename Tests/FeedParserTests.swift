@@ -290,7 +290,8 @@ final class FeedParserTests: XCTestCase {
 
     func testCommentFallsBackToEventSummary() {
         // main_comment 缺失时正文取互动摘要, 与原版 "评论了这条动态" 兜底链一致
-        let feed = rawFeed(eventType: 2, cellID: "cell-x", eventSummary: "评论了这条动态")
+        // 缺少 cell_id 的互动记录不应产生动态 (原版 save_original_dynamic 直接返回)
+        let feed = rawFeed(eventType: 2, cellID: nil, eventSummary: "评论了这条动态")
         let comment = FeedParser.commentFromValues(
             commentsJSON: nil,
             actorUin: "888",
@@ -318,15 +319,6 @@ final class FeedParserTests: XCTestCase {
             eventSummary: "回复了你：同感",
             eventTime: 1_700_000_300
         )
-        if let root = FeedParser.tryParseJsonText(json) {
-            let main = FeedParser.jsonPointer(root, "/main_comment")
-            print("DBG root keys:", Array((root as? [String: Any])?.keys ?? [:].keys))
-            print("DBG main:", main.map { String(describing: $0) } ?? "nil")
-            print("DBG replynum:", FeedParser.asInteger(FeedParser.jsonPointer(main, "/replynum")) ?? -1)
-            print("DBG date:", FeedParser.asInteger(FeedParser.jsonPointer(main, "/date")) ?? -1)
-        } else {
-            print("DBG parse failed")
-        }
         XCTAssertEqual(comment.content, "写得不错")
         XCTAssertEqual(comment.replies.count, 2, "回复通知应补一条回复")
         XCTAssertEqual(comment.replies.last?.content, "回复了你：同感")

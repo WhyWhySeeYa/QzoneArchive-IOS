@@ -486,10 +486,18 @@ enum FeedParser {
         !token.isEmpty && token.utf8.allSatisfy { (0x30...0x39).contains($0) }
     }
 
+    /// 判断是否为 JSON 布尔值
+    ///
+    /// 注意不能用 `value is Bool`: NSNumber(0/1) 在 Darwin 上也能桥接成 Bool,
+    /// 会把真实的数字 1 误判为布尔 (replynum/hasmore 都是 0/1)
+    static func isJSONBool(_ value: Any) -> Bool {
+        return CFGetTypeID(value as CFTypeRef) == CFBooleanGetTypeID()
+    }
+
     /// 取指针指向的文本: 非空字符串原样返回, 数字转十进制文本, 其余 nil
     static func textAt(_ object: Any, _ path: String) -> String? {
         guard let target = jsonPointer(object, path) else { return nil }
-        if target is Bool { return nil }
+        if isJSONBool(target) { return nil }
         if let text = target as? String { return text.isEmpty ? nil : text }
         if let number = target as? NSNumber { return number.stringValue }
         return nil
@@ -497,7 +505,7 @@ enum FeedParser {
 
     /// 只接受整数数字 (JS Number.isInteger), 字符串不参与转换
     static func asInteger(_ value: Any?) -> Int? {
-        guard let value = value, !(value is Bool), let number = value as? NSNumber else { return nil }
+        guard let value = value, !isJSONBool(value), let number = value as? NSNumber else { return nil }
         let raw = number.doubleValue
         guard raw.isFinite, raw.rounded() == raw, abs(raw) <= 9_007_199_254_740_992 else { return nil }
         return Int(raw)
